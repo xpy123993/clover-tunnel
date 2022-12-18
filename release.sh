@@ -10,17 +10,18 @@ CERT_SUBJECT="/C=US/ST=CA/L=Sunnyvale/O=Tunnel Service./CN=Tunnel Service"
 [ ! -d $OUTPUT_FOLDER ] && mkdir $OUTPUT_FOLDER
 [ ! -d $CERT_FOLDER ] && mkdir $CERT_FOLDER
 
-if [ ! -f $CERT_FOLDER/ca.key ]; then
+if [ ! -f $CERT_FOLDER/ca.crt ]; then
     openssl genrsa -out $CERT_FOLDER/ca.key 2048
     openssl req -new -x509 -days 3650 -key $CERT_FOLDER/ca.key -subj "$CA_SUBJECT" -out $CERT_FOLDER/ca.crt
 else
     echo Skiping CA generation.
 fi
 
-if [ ! -f $CERT_FOLDER/cert.key ]; then
+if [ ! -f $CERT_FOLDER/cert.crt ]; then
     echo Generating $CERT_FOLDER/cert.key...
     openssl req -newkey rsa:2048 -nodes -keyout $CERT_FOLDER/cert.key -subj "$CERT_SUBJECT tunnel" -out $CERT_FOLDER/cert.csr
     openssl x509 -req -extfile <(printf "subjectAltName=DNS:tunnel") -days 3650 -in $CERT_FOLDER/cert.csr -CA $CERT_FOLDER/ca.crt -CAkey $CERT_FOLDER/ca.key -CAcreateserial -out $CERT_FOLDER/cert.crt
+    echo tunnel > $CERT_FOLDER/servername.txt
 else
     echo Skiping $CERT_FOLDER/cert.key
 fi

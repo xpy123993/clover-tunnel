@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"embed"
 	"fmt"
+	"strings"
 )
 
 var (
@@ -33,6 +34,10 @@ func getTLSConfigFromEmbeded() (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse certificate: %v", err)
 	}
+	serverName := ""
+	if name, err := embeddedFile.ReadFile("tokens/servername.txt"); err == nil {
+		serverName = strings.Trim(string(name), " \n")
+	}
 	return &tls.Config{
 		RootCAs:      caPool,
 		ClientCAs:    caPool,
@@ -40,6 +45,6 @@ func getTLSConfigFromEmbeded() (*tls.Config, error) {
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   []string{"clover3"},
 		MinVersion:   tls.VersionTLS13,
-		ServerName:   "tunnel",
+		ServerName:   serverName,
 	}, nil
 }
