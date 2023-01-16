@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"log"
+	"net/url"
 	"os"
 )
 
@@ -29,5 +30,17 @@ func main() {
 		serveAsRelayServer(os.Args[2])
 		return
 	}
-	serveAsTunnel(os.Args[1], os.Args[2])
+	fromURL, err := url.Parse(os.Args[1])
+	if err != nil {
+		log.Fatalf("Invalid from addr: %v", err)
+	}
+	toURL, err := url.Parse(os.Args[2])
+	if err != nil {
+		log.Fatalf("Invalid to addr: %v", err)
+	}
+	if fromURL.Scheme == "tun" {
+		serverAsTun(fromURL, toURL)
+		return
+	}
+	serverAsPipe(fromURL, toURL)
 }

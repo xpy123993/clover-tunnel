@@ -2,7 +2,10 @@ module github.com/xpy123993/clover-tunnel
 
 go 1.18
 
-require git.yuki.nu/corenet v0.0.44-rc0
+require (
+	git.yuki.nu/corenet v0.0.44-rc0
+	golang.zx2c4.com/wireguard v0.0.0-20220920152132-bb719d3a6e2c
+)
 
 require (
 	github.com/go-task/slim-sprig v0.0.0-20210107165309-348f09dbbbc0 // indirect
@@ -26,4 +29,5 @@ require (
 	golang.org/x/net v0.4.0 // indirect
 	golang.org/x/sys v0.3.0 // indirect
 	golang.org/x/tools v0.4.0 // indirect
+	golang.zx2c4.com/wintun v0.0.0-20211104114900-415007cec224 // indirect
 )

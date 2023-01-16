@@ -9,11 +9,7 @@ import (
 	"git.yuki.nu/corenet"
 )
 
-func createDialer(addr string) (func() (net.Conn, error), error) {
-	dialerURL, err := url.Parse(addr)
-	if err != nil {
-		return nil, err
-	}
+func createDialer(dialerURL *url.URL) (func() (net.Conn, error), error) {
 	switch dialerURL.Scheme {
 	case "tcp":
 		return func() (net.Conn, error) {
@@ -61,12 +57,7 @@ func createCorenetListener(listenerURL *url.URL) (net.Listener, error) {
 	return corenet.NewMultiListener(adapters...), nil
 }
 
-func createListener(addr string) (net.Listener, error) {
-	listenerURL, err := url.Parse(addr)
-	if err != nil {
-		return nil, err
-	}
-
+func createListener(listenerURL *url.URL) (net.Listener, error) {
 	switch listenerURL.Scheme {
 	case "tcp":
 		return net.Listen("tcp", listenerURL.Host)
