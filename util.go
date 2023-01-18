@@ -7,17 +7,6 @@ import (
 	"net"
 )
 
-func getSrcKeyFromPacket(packet []byte) string {
-	switch packet[0] >> 4 {
-	case 4:
-		return net.IP(packet[12:16]).To4().String()
-	case 6:
-		return net.IP(packet[8:24]).To16().String()
-	default:
-		return ""
-	}
-}
-
 // getDstKeyFromPacket returns the destination key of the packets
 func getDstKeyFromPacket(packet []byte) string {
 	switch packet[0] >> 4 {

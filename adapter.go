@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"time"
 
 	"git.yuki.nu/corenet"
 )
@@ -37,6 +38,8 @@ func createDialer(dialerURL *url.URL) (func() (net.Conn, error), error) {
 func createCorenetListener(listenerURL *url.URL) (net.Listener, error) {
 	opts := corenet.CreateDefaultFallbackOptions()
 	opts.TLSConfig = tunnelTLSConfig
+	opts.KCPConfig = corenet.DefaultKCPConfig()
+	opts.QuicConfig.KeepAlivePeriod = 5 * time.Second
 	adapter, err := corenet.CreateListenerFallbackURLAdapter(listenerURL.String(), listenerURL.Path, opts)
 	if err != nil {
 		return nil, err
