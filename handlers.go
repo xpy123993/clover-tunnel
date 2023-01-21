@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"git.yuki.nu/corenet"
+	"github.com/lucas-clemente/quic-go"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -65,8 +66,8 @@ func serveTUNReceiveLoop(Ifce tun.Device, localNet *netip.Prefix, sendFunc func(
 	if err != nil {
 		return fmt.Errorf("cannot determine the MTU of the tun device")
 	}
-	buf := make([]byte, mtu+offset)
 	for {
+		buf := make([]byte, mtu+offset)
 		n, err := Ifce.Read(buf, offset)
 		if err != nil {
 			return err
@@ -80,7 +81,7 @@ func serveTUNReceiveLoop(Ifce tun.Device, localNet *netip.Prefix, sendFunc func(
 			continue
 		}
 		if localNet.Contains(dstIP) {
-			sendFunc(dst, buf[:n+offset], offset)
+			go sendFunc(dst, buf[:n+offset], offset)
 		}
 	}
 }
@@ -125,6 +126,8 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 
 	clientDialer := corenet.NewDialer(
 		[]string{toAddr.String()},
+		corenet.WithDialerQuicConfig(&quic.Config{KeepAlivePeriod: 5 * time.Second}),
+		corenet.WithDialerKCPConfig(corenet.DefaultKCPConfig()),
 		corenet.WithDialerRelayTLSConfig(tunnelTLSConfig), corenet.WithDialerDirectAccessCIDRBlockList([]netip.Prefix{
 			netip.MustParsePrefix("127.0.0.1/8"),
 			localNet,

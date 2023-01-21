@@ -4,6 +4,7 @@ go 1.18
 
 require (
 	git.yuki.nu/corenet v0.0.44-rc0
+	github.com/lucas-clemente/quic-go v0.31.1
 	golang.zx2c4.com/wireguard v0.0.0-20220920152132-bb719d3a6e2c
 )
 
@@ -13,7 +14,6 @@ require (
 	github.com/google/pprof v0.0.0-20221212185716-aee1124e3a93 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.2 // indirect
 	github.com/klauspost/reedsolomon v1.11.3 // indirect
-	github.com/lucas-clemente/quic-go v0.31.1 // indirect
 	github.com/marten-seemann/qtls-go1-18 v0.1.3 // indirect
 	github.com/marten-seemann/qtls-go1-19 v0.1.1 // indirect
 	github.com/onsi/ginkgo/v2 v2.6.1 // indirect
