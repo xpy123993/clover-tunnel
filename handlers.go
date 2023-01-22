@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"git.yuki.nu/corenet"
 	"github.com/lucas-clemente/quic-go"
+	"github.com/xpy123993/corenet"
 	"golang.zx2c4.com/wireguard/tun"
 )
 

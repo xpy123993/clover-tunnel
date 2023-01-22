@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"git.yuki.nu/corenet"
+	"github.com/xpy123993/corenet"
 )
 
 func createDialer(dialerURL *url.URL) (func() (net.Conn, error), error) {
