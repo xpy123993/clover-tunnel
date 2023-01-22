@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/gob"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +20,58 @@ import (
 )
 
 const offset = 4
+
+type labelledConn struct {
+	net.Conn
+	label string
+}
+
+type ConnectionTable struct {
+	mu        sync.Mutex
+	connTable map[string]*labelledConn
+
+	myAddr string
+}
+
+func (t *ConnectionTable) lookupOrCreate(address string, dialer func() (net.Conn, error)) (net.Conn, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if conn, exists := t.connTable[address]; exists && conn != nil {
+		return conn, nil
+	}
+	conn, err := dialer()
+	if err != nil {
+		return nil, err
+	}
+	t.connTable[address] = &labelledConn{Conn: conn, label: t.myAddr}
+	return conn, nil
+}
+
+func (t *ConnectionTable) mayUpdateConnection(address string, newConn net.Conn) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	conn, exists := t.connTable[address]
+	if exists && conn != nil {
+		return false
+	}
+	t.connTable[address] = &labelledConn{Conn: conn, label: address}
+	return true
+}
+
+func (t *ConnectionTable) removeConn(address string, oldConn net.Conn) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.connTable[address] == oldConn {
+		delete(t.connTable, address)
+	}
+}
+
+type PeerHello struct {
+	Address string `json:"address"`
+}
 
 func serveAsRelayServer(relayURL string) {
 	server := corenet.NewRelayServer(corenet.WithRelayServerForceEvictChannelSession(true))
@@ -80,8 +133,30 @@ func serveTUNReceiveLoop(Ifce tun.Device, localNet *netip.Prefix, sendFunc func(
 		if err != nil {
 			continue
 		}
-		if localNet.Contains(dstIP) {
+		if localNet.Contains(dstIP) || dst == "224.0.0.251" {
 			go sendFunc(dst, buf[:n+offset], offset)
+		}
+	}
+}
+
+func serveTUNSendLoop(connTable *ConnectionTable, conn net.Conn, mtu int, device tun.Device, updateAddr bool) {
+	defer conn.Close()
+	peerHello := PeerHello{}
+	if err := gob.NewDecoder(conn).Decode(&peerHello); err != nil {
+		return
+	}
+	buf := make([]byte, mtu+offset)
+	for {
+		n, err := readBuffer(conn, buf[offset:])
+		if err != nil {
+			return
+		}
+		if _, err := device.Write(buf[:n+offset], offset); err != nil {
+			log.Fatal(err)
+		}
+		if updateAddr {
+			connTable.mayUpdateConnection(peerHello.Address, conn)
+			updateAddr = false
 		}
 	}
 }
@@ -132,30 +207,36 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 			netip.MustParsePrefix("127.0.0.1/8"),
 			localNet,
 		}))
-	peerConns := make(map[string]net.Conn, 0)
-	mu := sync.Mutex{}
+
+	connTable := ConnectionTable{
+		connTable: make(map[string]*labelledConn),
+		myAddr:    localAddr.String(),
+	}
 	defer device.Close()
+
 	go serveTUNReceiveLoop(device, &localNet, func(s string, b []byte, i int) {
-		mu.Lock()
-		conn, exists := peerConns[s]
-		if !exists {
-			var err error
-			conn, err = clientDialer.Dial(path.Join(toAddr.Path, s))
+		conn, err := connTable.lookupOrCreate(s, func() (net.Conn, error) {
+			conn, err := clientDialer.Dial(path.Join(toAddr.Path, s))
 			if err != nil {
-				mu.Unlock()
-				return
+				return nil, err
 			}
-			peerConns[s] = conn
+			conn.SetDeadline(time.Now().Add(10 * time.Second))
+			defer conn.SetDeadline(time.Time{})
+			if err := gob.NewEncoder(conn).Encode(PeerHello{Address: localAddr.String()}); err != nil {
+				conn.Close()
+				return nil, err
+			}
+			go serveTUNSendLoop(&connTable, conn, mtu, device, false)
+			return conn, nil
+		})
+		if err != nil {
+			return
 		}
-		mu.Unlock()
+
 		conn.SetDeadline(time.Now().Add(10 * time.Second))
 		if _, err := writeBuffer(conn, b, i); err != nil {
 			defer conn.Close()
-			mu.Lock()
-			if peerConns[s] == conn {
-				delete(peerConns, s)
-			}
-			mu.Unlock()
+			connTable.removeConn(s, conn)
 		}
 		conn.SetDeadline(time.Time{})
 	})
@@ -170,18 +251,6 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		go func(conn net.Conn) {
-			defer conn.Close()
-			buf := make([]byte, mtu+offset)
-			for {
-				n, err := readBuffer(conn, buf[offset:])
-				if err != nil {
-					return
-				}
-				if _, err := device.Write(buf[:n+offset], offset); err != nil {
-					log.Fatal(err)
-				}
-			}
-		}(peerConn)
+		go serveTUNSendLoop(&connTable, peerConn, mtu, device, true)
 	}
 }
