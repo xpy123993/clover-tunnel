@@ -133,7 +133,8 @@ func serveTUNReceiveLoop(Ifce tun.Device, localNet *netip.Prefix, sendFunc func(
 		if err != nil {
 			continue
 		}
-		if localNet.Contains(dstIP) || dst == "224.0.0.251" {
+		if localNet.Contains(dstIP) {
+			// TODO: should use a channel to buffer here.
 			go sendFunc(dst, buf[:n+offset], offset)
 		}
 	}
