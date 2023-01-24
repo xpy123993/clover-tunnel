@@ -56,7 +56,7 @@ func (t *ConnectionTable) mayUpdateConnection(address string, newConn net.Conn) 
 	if exists && conn != nil {
 		return false
 	}
-	t.connTable[address] = &labelledConn{Conn: conn, label: address}
+	t.connTable[address] = &labelledConn{Conn: newConn, label: address}
 	return true
 }
 
@@ -216,7 +216,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	defer device.Close()
 
 	go serveTUNReceiveLoop(device, &localNet, func(s string, b []byte, i int) {
-		conn, err := connTable.lookupOrCreate(s, func() (net.Conn, error) {
+		peerConn, err := connTable.lookupOrCreate(s, func() (net.Conn, error) {
 			conn, err := clientDialer.Dial(path.Join(toAddr.Path, s))
 			if err != nil {
 				return nil, err
@@ -234,12 +234,12 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 			return
 		}
 
-		conn.SetDeadline(time.Now().Add(10 * time.Second))
-		if _, err := writeBuffer(conn, b, i); err != nil {
-			defer conn.Close()
-			connTable.removeConn(s, conn)
+		peerConn.SetDeadline(time.Now().Add(10 * time.Second))
+		if _, err := writeBuffer(peerConn, b, i); err != nil {
+			defer peerConn.Close()
+			connTable.removeConn(s, peerConn)
 		}
-		conn.SetDeadline(time.Time{})
+		peerConn.SetDeadline(time.Time{})
 	})
 
 	listener, err := createListener(&listenAddr)
