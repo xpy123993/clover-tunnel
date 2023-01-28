@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	_ "net/http/pprof"
 	"net/netip"
 	"net/url"
 	"path"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/lucas-clemente/quic-go"
 	"github.com/xpy123993/corenet"
+	"golang.org/x/net/trace"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -23,7 +25,10 @@ const offset = 4
 
 type labelledConn struct {
 	net.Conn
-	label string
+
+	tracker trace.Trace
+	label   string
+	encoder *gob.Encoder
 }
 
 type ConnectionTable struct {
@@ -33,7 +38,7 @@ type ConnectionTable struct {
 	myAddr string
 }
 
-func (t *ConnectionTable) lookupOrCreate(address string, dialer func() (net.Conn, error)) (net.Conn, error) {
+func (t *ConnectionTable) lookupOrCreate(address string, dialer func() (net.Conn, error)) (*labelledConn, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -44,8 +49,9 @@ func (t *ConnectionTable) lookupOrCreate(address string, dialer func() (net.Conn
 	if err != nil {
 		return nil, err
 	}
-	t.connTable[address] = &labelledConn{Conn: conn, label: t.myAddr}
-	return conn, nil
+	t.connTable[address] = &labelledConn{Conn: conn, label: t.myAddr, tracker: trace.New("tunnel", address), encoder: gob.NewEncoder(conn)}
+	t.connTable[address].tracker.LazyPrintf("Registered in the connection table (sender)")
+	return t.connTable[address], nil
 }
 
 func (t *ConnectionTable) mayUpdateConnection(address string, newConn net.Conn) bool {
@@ -56,21 +62,35 @@ func (t *ConnectionTable) mayUpdateConnection(address string, newConn net.Conn) 
 	if exists && conn != nil {
 		return false
 	}
-	t.connTable[address] = &labelledConn{Conn: newConn, label: address}
+	t.connTable[address] = &labelledConn{Conn: newConn, label: address, tracker: trace.New("tunnel", address), encoder: gob.NewEncoder(conn)}
+	t.connTable[address].tracker.LazyPrintf("Registered in the connection table (receiver)")
 	return true
 }
 
-func (t *ConnectionTable) removeConn(address string, oldConn net.Conn) {
+func (t *ConnectionTable) removeConn(address string, oldConn net.Conn, reason string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.connTable[address] == oldConn {
+		t.connTable[address].tracker.LazyPrintf("Error: %s", reason)
+		t.connTable[address].tracker.SetError()
+		t.connTable[address].tracker.Finish()
 		delete(t.connTable, address)
 	}
 }
 
 type PeerHello struct {
-	Address string `json:"address"`
+	FromAddr string `json:"from-addr"`
+	ToAddr   string `json:"to-addr"`
+}
+
+type PeerResponse struct {
+	Success bool   `json:"success"`
+	Reason  string `json:"reason"`
+}
+
+type Packet struct {
+	Data []byte
 }
 
 func serveAsRelayServer(relayURL string) {
@@ -140,24 +160,15 @@ func serveTUNReceiveLoop(Ifce tun.Device, localNet *netip.Prefix, sendFunc func(
 	}
 }
 
-func serveTUNSendLoop(connTable *ConnectionTable, conn net.Conn, mtu int, device tun.Device, updateAddr bool) {
-	defer conn.Close()
-	peerHello := PeerHello{}
-	if err := gob.NewDecoder(conn).Decode(&peerHello); err != nil {
-		return
-	}
-	buf := make([]byte, mtu+offset)
+func serveTUNSendLoop(connTable *ConnectionTable, conn net.Conn, mtu int, device tun.Device) {
+	packet := Packet{}
+	decoder := gob.NewDecoder(conn)
 	for {
-		n, err := readBuffer(conn, buf[offset:])
-		if err != nil {
+		if err := decoder.Decode(&packet); err != nil {
 			return
 		}
-		if _, err := device.Write(buf[:n+offset], offset); err != nil {
+		if _, err := device.Write(packet.Data, offset); err != nil {
 			log.Fatal(err)
-		}
-		if updateAddr {
-			connTable.mayUpdateConnection(peerHello.Address, conn)
-			updateAddr = false
 		}
 	}
 }
@@ -217,17 +228,39 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 
 	go serveTUNReceiveLoop(device, &localNet, func(s string, b []byte, i int) {
 		peerConn, err := connTable.lookupOrCreate(s, func() (net.Conn, error) {
+			tracker := trace.New("factory", "New connection")
+			defer tracker.Finish()
+			tracker.LazyPrintf("Connecting to %s", path.Join(toAddr.Path, s))
 			conn, err := clientDialer.Dial(path.Join(toAddr.Path, s))
 			if err != nil {
+				tracker.LazyPrintf(err.Error())
+				tracker.SetError()
 				return nil, err
 			}
 			conn.SetDeadline(time.Now().Add(10 * time.Second))
-			defer conn.SetDeadline(time.Time{})
-			if err := gob.NewEncoder(conn).Encode(PeerHello{Address: localAddr.String()}); err != nil {
+			if err := gob.NewEncoder(conn).Encode(PeerHello{FromAddr: connTable.myAddr, ToAddr: s}); err != nil {
+				tracker.LazyPrintf("Handshake failed on request")
+				tracker.LazyPrintf(err.Error())
+				tracker.SetError()
 				conn.Close()
 				return nil, err
 			}
-			go serveTUNSendLoop(&connTable, conn, mtu, device, false)
+			resp := PeerResponse{}
+			if err := gob.NewDecoder(conn).Decode(&resp); err != nil {
+				tracker.LazyPrintf("Handshake failed on response")
+				tracker.LazyPrintf(err.Error())
+				tracker.SetError()
+				conn.Close()
+				return nil, err
+			}
+			if !resp.Success {
+				tracker.LazyPrintf("Handshake failed by remote peer: %s", resp.Reason)
+				tracker.SetError()
+				conn.Close()
+				return nil, fmt.Errorf("app error: %s", resp.Reason)
+			}
+			go serveTUNSendLoop(&connTable, conn, mtu, device)
+			conn.SetDeadline(time.Time{})
 			return conn, nil
 		})
 		if err != nil {
@@ -235,9 +268,9 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		}
 
 		peerConn.SetDeadline(time.Now().Add(10 * time.Second))
-		if _, err := writeBuffer(peerConn, b, i); err != nil {
+		if err := peerConn.encoder.Encode(Packet{Data: b}); err != nil {
 			defer peerConn.Close()
-			connTable.removeConn(s, peerConn)
+			connTable.removeConn(s, peerConn, err.Error())
 		}
 		peerConn.SetDeadline(time.Time{})
 	})
@@ -252,6 +285,21 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		go serveTUNSendLoop(&connTable, peerConn, mtu, device, true)
+		go func(peerConn net.Conn) {
+			defer peerConn.Close()
+			peerHello := PeerHello{}
+			if err := gob.NewDecoder(peerConn).Decode(&peerHello); err != nil {
+				return
+			}
+			if peerHello.ToAddr != connTable.myAddr {
+				gob.NewEncoder(peerConn).Encode(PeerResponse{Success: false, Reason: fmt.Sprintf("expect local addr: %s, got %s", connTable.myAddr, peerHello.ToAddr)})
+				return
+			}
+			if err := gob.NewEncoder(peerConn).Encode(PeerResponse{Success: true}); err != nil {
+				return
+			}
+			connTable.mayUpdateConnection(peerHello.FromAddr, peerConn)
+			serveTUNSendLoop(&connTable, peerConn, mtu, device)
+		}(peerConn)
 	}
 }

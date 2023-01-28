@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+
+	"golang.org/x/net/trace"
 )
 
 var (
@@ -16,6 +18,9 @@ var (
 
 func main() {
 	flag.Parse()
+	trace.AuthRequest = func(req *http.Request) (any bool, sensitive bool) {
+		return true, true
+	}
 
 	if len(*debugAddress) > 0 {
 		go http.ListenAndServe(*debugAddress, nil)
