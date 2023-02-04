@@ -24,11 +24,83 @@ import (
 const offset = 4
 
 type labelledConn struct {
-	net.Conn
+	conn net.Conn
 
+	mu      sync.RWMutex
+	dialer  func() (net.Conn, error)
 	tracker trace.Trace
 	label   string
 	encoder *gob.Encoder
+}
+
+func (c *labelledConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return nil
+	}
+	err := c.conn.Close()
+	c.conn = nil
+	c.encoder = nil
+	return err
+}
+
+func (c *labelledConn) init() error {
+	if c.dialer == nil {
+		return fmt.Errorf("closed")
+	}
+	var err error
+	c.conn, err = c.dialer()
+	if err != nil {
+		return err
+	}
+	c.encoder = gob.NewEncoder(c.conn)
+	return nil
+}
+
+func (c *labelledConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		if err := c.init(); err != nil {
+			return 0, err
+		}
+	}
+	n, err := c.conn.Write(b)
+	if err != nil {
+		c.conn.Close()
+		c.conn = nil
+		c.encoder = nil
+	}
+	return n, err
+}
+
+func (c *labelledConn) Encode(b []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		if err := c.init(); err != nil {
+			return err
+		}
+	}
+	err := c.encoder.Encode(Packet{Data: b})
+	if err != nil {
+		c.conn.Close()
+		c.conn = nil
+		c.encoder = nil
+	}
+	return err
+}
+
+func (c *labelledConn) SetDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		if err := c.init(); err != nil {
+			return err
+		}
+	}
+	return c.conn.SetDeadline(t)
 }
 
 type ConnectionTable struct {
@@ -45,11 +117,7 @@ func (t *ConnectionTable) lookupOrCreate(address string, dialer func() (net.Conn
 	if conn, exists := t.connTable[address]; exists && conn != nil {
 		return conn, nil
 	}
-	conn, err := dialer()
-	if err != nil {
-		return nil, err
-	}
-	t.connTable[address] = &labelledConn{Conn: conn, label: t.myAddr, tracker: trace.New("tunnel", address), encoder: gob.NewEncoder(conn)}
+	t.connTable[address] = &labelledConn{dialer: dialer, label: t.myAddr, tracker: trace.New("tunnel", address)}
 	t.connTable[address].tracker.LazyPrintf("Registered in the connection table (sender)")
 	return t.connTable[address], nil
 }
@@ -62,19 +130,19 @@ func (t *ConnectionTable) mayUpdateConnection(address string, newConn net.Conn) 
 	if exists && conn != nil {
 		return false
 	}
-	t.connTable[address] = &labelledConn{Conn: newConn, label: address, tracker: trace.New("tunnel", address), encoder: gob.NewEncoder(conn)}
+	t.connTable[address] = &labelledConn{conn: newConn, label: address, tracker: trace.New("tunnel", address), encoder: gob.NewEncoder(newConn)}
 	t.connTable[address].tracker.LazyPrintf("Registered in the connection table (receiver)")
 	return true
 }
 
-func (t *ConnectionTable) removeConn(address string, oldConn net.Conn, reason string) {
+func (t *ConnectionTable) removeConn(address string, oldConn *labelledConn, reason string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	oldConn.tracker.LazyPrintf("Error: %s", reason)
+	oldConn.tracker.SetError()
+	oldConn.tracker.Finish()
 	if t.connTable[address] == oldConn {
-		t.connTable[address].tracker.LazyPrintf("Error: %s", reason)
-		t.connTable[address].tracker.SetError()
-		t.connTable[address].tracker.Finish()
 		delete(t.connTable, address)
 	}
 }
