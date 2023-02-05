@@ -25,7 +25,7 @@ type PeerConnection struct {
 	pool       *sync.Pool
 
 	maxQueueSize int
-	tracker      trace.Trace
+	tracker      trace.EventLog
 }
 
 func NewConnection(addr string, dialer func() (net.Conn, error), receiveChan chan *Packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
@@ -37,7 +37,7 @@ func NewConnection(addr string, dialer func() (net.Conn, error), receiveChan cha
 		isClosed:     false,
 		pool:         pool,
 		maxQueueSize: maxQueueSize,
-		tracker:      trace.New("Peer", addr),
+		tracker:      trace.NewEventLog("Peer", "Connection to "+addr),
 	}
 }
 
@@ -61,12 +61,12 @@ func (c *PeerConnection) Send(p *Packet) {
 	select {
 	case c.sendChan <- p:
 	default:
-		c.tracker.LazyPrintf("send packet dropped")
+		c.tracker.Errorf("Send loop is full: some packets dropped")
 	}
 }
 
 func (c *PeerConnection) receiveLoop(conn net.Conn) {
-	c.tracker.LazyPrintf("Incoming peer connection: %v", conn.RemoteAddr())
+	c.tracker.Printf("Starting receiving loop for %v", conn.RemoteAddr())
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	for {
@@ -74,7 +74,7 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 		packet.N = 0
 		n, err := readBuffer(reader, packet.Data[offset:])
 		if err != nil {
-			c.tracker.LazyPrintf("Closed peer connection %v: %v", conn.RemoteAddr(), err)
+			c.tracker.Errorf("Closed peer connection %v: %v", conn.RemoteAddr(), err)
 			return
 		}
 		packet.N = n + offset
@@ -86,7 +86,7 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 		select {
 		case c.receiveChan <- packet:
 		default:
-			c.tracker.LazyPrintf("receive packet dropped")
+			c.tracker.Errorf("Receive loop is full: some packets dropped")
 		}
 		c.mu.RUnlock()
 	}
@@ -100,18 +100,19 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 	} else {
 		go c.receiveLoop(conn)
 	}
-
+	c.tracker.Printf("Starting channel loop")
 	for packet := range c.sendChan {
 		if err != nil {
 			if time.Since(lastError) > time.Second {
 				if conn != nil {
 					conn.Close()
 				}
-				c.tracker.LazyPrintf("Restarting connection")
+				c.tracker.Printf("Initializing connection")
 				conn, err = c.dialer()
 				if err == nil {
 					go c.receiveLoop(conn)
 				} else {
+					c.tracker.Errorf("Initializing connection failed: %v", err)
 					lastError = time.Now()
 				}
 			}
@@ -163,9 +164,8 @@ func NewPeerTable(mtu int, device tun.Device, listener net.Listener, localNet ne
 }
 
 func (t *PeerTable) dialToPeer(s string) (net.Conn, error) {
-	tracker := trace.New("factory", "New connection")
+	tracker := trace.New("corenet.Dial", "New connection to "+s)
 	defer tracker.Finish()
-	tracker.LazyPrintf("Connecting to %s", s)
 	conn, err := t.dialer(s)
 	if err != nil {
 		tracker.LazyPrintf(err.Error())
