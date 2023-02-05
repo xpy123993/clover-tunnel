@@ -1,7 +1,7 @@
 package main
 
 import (
-	"compress/gzip"
+	"bufio"
 	"encoding/gob"
 	"fmt"
 	"log"
@@ -68,11 +68,7 @@ func (c *PeerConnection) Send(p *Packet) {
 func (c *PeerConnection) receiveLoop(conn net.Conn) {
 	c.tracker.LazyPrintf("Incoming peer connection: %v", conn.RemoteAddr())
 	defer conn.Close()
-	reader, err := gzip.NewReader(conn)
-	if err != nil {
-		c.tracker.LazyPrintf("Failed to initialize recv conn: %v", err)
-		return
-	}
+	reader := bufio.NewReader(conn)
 	for {
 		packet := c.pool.Get().(*Packet)
 		packet.N = 0
@@ -98,13 +94,11 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 
 func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 	var err error
-	var writer *gzip.Writer
 	lastError := time.Time{}
 	if conn == nil {
 		err = fmt.Errorf("uninitialized")
 	} else {
 		go c.receiveLoop(conn)
-		writer, err = gzip.NewWriterLevel(conn, gzip.BestCompression)
 	}
 
 	for packet := range c.sendChan {
@@ -117,17 +111,15 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 				conn, err = c.dialer()
 				if err == nil {
 					go c.receiveLoop(conn)
-					writer, err = gzip.NewWriterLevel(conn, gzip.BestCompression)
 				} else {
 					lastError = time.Now()
 				}
 			}
 			continue
 		}
-		if _, err = writeBuffer(writer, packet.Data[:packet.N], offset); err != nil {
+		if _, err = writeBuffer(conn, packet.Data[:packet.N], offset); err != nil {
 			lastError = time.Now()
 		}
-		writer.Flush()
 		c.pool.Put(packet)
 	}
 	if conn != nil {
