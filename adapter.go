@@ -16,17 +16,7 @@ func createDialer(dialerURL *url.URL) (func() (net.Conn, error), error) {
 		return func() (net.Conn, error) {
 			return net.Dial("tcp", dialerURL.Host)
 		}, nil
-	case "ttf":
-		dialer := corenet.NewDialer([]string{dialerURL.String()}, corenet.WithDialerRelayTLSConfig(tunnelTLSConfig))
-		return func() (net.Conn, error) {
-			return dialer.Dial(dialerURL.Path)
-		}, nil
-	case "ktf":
-		dialer := corenet.NewDialer([]string{dialerURL.String()}, corenet.WithDialerRelayTLSConfig(tunnelTLSConfig))
-		return func() (net.Conn, error) {
-			return dialer.Dial(dialerURL.Path)
-		}, nil
-	case "quicf":
+	case "ttf", "ktf", "quicf":
 		dialer := corenet.NewDialer([]string{dialerURL.String()}, corenet.WithDialerRelayTLSConfig(tunnelTLSConfig))
 		return func() (net.Conn, error) {
 			return dialer.Dial(dialerURL.Path)
@@ -64,11 +54,7 @@ func createListener(listenerURL *url.URL) (net.Listener, error) {
 	switch listenerURL.Scheme {
 	case "tcp":
 		return net.Listen("tcp", listenerURL.Host)
-	case "ktf":
-		return createCorenetListener(listenerURL)
-	case "ttf":
-		return createCorenetListener(listenerURL)
-	case "quicf":
+	case "ktf", "ttf", "quicf":
 		return createCorenetListener(listenerURL)
 	}
 	return nil, fmt.Errorf("URL scheme is not supported")
