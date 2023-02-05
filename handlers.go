@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/gob"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -16,7 +14,6 @@ import (
 
 	"github.com/lucas-clemente/quic-go"
 	"github.com/xpy123993/corenet"
-	"golang.org/x/net/trace"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -126,39 +123,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 			localNet,
 		}))
 	peerDialer := func(s string) (net.Conn, error) {
-		tracker := trace.New("factory", "New connection")
-		defer tracker.Finish()
-		tracker.LazyPrintf("Connecting to %s", path.Join(toAddr.Path, s))
-		conn, err := clientDialer.Dial(path.Join(toAddr.Path, s))
-		if err != nil {
-			tracker.LazyPrintf(err.Error())
-			tracker.SetError()
-			return nil, err
-		}
-		conn.SetDeadline(time.Now().Add(10 * time.Second))
-		if err := gob.NewEncoder(conn).Encode(PeerHello{FromAddr: localAddr.String(), ToAddr: s}); err != nil {
-			tracker.LazyPrintf("Handshake failed on request")
-			tracker.LazyPrintf(err.Error())
-			tracker.SetError()
-			conn.Close()
-			return nil, err
-		}
-		resp := PeerResponse{}
-		if err := gob.NewDecoder(conn).Decode(&resp); err != nil {
-			tracker.LazyPrintf("Handshake failed on response")
-			tracker.LazyPrintf(err.Error())
-			tracker.SetError()
-			conn.Close()
-			return nil, err
-		}
-		if !resp.Success {
-			tracker.LazyPrintf("Handshake failed by remote peer: %s", resp.Reason)
-			tracker.SetError()
-			conn.Close()
-			return nil, fmt.Errorf("app error: %s", resp.Reason)
-		}
-		conn.SetDeadline(time.Time{})
-		return conn, nil
+		return clientDialer.Dial(path.Join(toAddr.Path, s))
 	}
 
 	listener, err := createListener(&listenAddr)

@@ -162,6 +162,42 @@ func NewPeerTable(mtu int, device tun.Device, listener net.Listener, localNet ne
 	}
 }
 
+func (t *PeerTable) dialToPeer(s string) (net.Conn, error) {
+	tracker := trace.New("factory", "New connection")
+	defer tracker.Finish()
+	tracker.LazyPrintf("Connecting to %s", s)
+	conn, err := t.dialer(s)
+	if err != nil {
+		tracker.LazyPrintf(err.Error())
+		tracker.SetError()
+		return nil, err
+	}
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := gob.NewEncoder(conn).Encode(PeerHello{FromAddr: t.localAddr, ToAddr: s}); err != nil {
+		tracker.LazyPrintf("Handshake failed on request")
+		tracker.LazyPrintf(err.Error())
+		tracker.SetError()
+		conn.Close()
+		return nil, err
+	}
+	resp := PeerResponse{}
+	if err := gob.NewDecoder(conn).Decode(&resp); err != nil {
+		tracker.LazyPrintf("Handshake failed on response")
+		tracker.LazyPrintf(err.Error())
+		tracker.SetError()
+		conn.Close()
+		return nil, err
+	}
+	if !resp.Success {
+		tracker.LazyPrintf("Handshake failed by remote peer: %s", resp.Reason)
+		tracker.SetError()
+		conn.Close()
+		return nil, fmt.Errorf("app error: %s", resp.Reason)
+	}
+	conn.SetDeadline(time.Time{})
+	return conn, nil
+}
+
 func (t *PeerTable) serveReadDeviceLoop() {
 	for {
 		packet := t.pool.Get().(*Packet)
@@ -184,7 +220,7 @@ func (t *PeerTable) serveReadDeviceLoop() {
 			t.mu.Lock()
 			peerConn, exists := t.table[dst]
 			if !exists {
-				dstDialer := func() (net.Conn, error) { return t.dialer(dst) }
+				dstDialer := func() (net.Conn, error) { return t.dialToPeer(dst) }
 				peerConn = NewConnection(dst, dstDialer, t.receiveChan, &t.pool, t.maxQueueSize)
 				go peerConn.ChannelLoop(nil)
 				t.table[dst] = peerConn
@@ -228,7 +264,7 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 			defer t.mu.Unlock()
 			peerCh, exists := t.table[peerHello.FromAddr]
 			if !exists {
-				dstDialer := func() (net.Conn, error) { return t.dialer(peerHello.FromAddr) }
+				dstDialer := func() (net.Conn, error) { return t.dialToPeer(peerHello.FromAddr) }
 				peerCh = NewConnection(peerHello.FromAddr, dstDialer, t.receiveChan, &t.pool, t.maxQueueSize)
 				t.table[peerHello.FromAddr] = peerCh
 				go peerCh.ChannelLoop(peerConn)
