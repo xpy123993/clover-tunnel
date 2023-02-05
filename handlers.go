@@ -167,6 +167,5 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	}
 	connTable := NewPeerTable(mtu, device, listener, localNet, localAddr.String(), peerDialer, 1000)
 	defer device.Close()
-	connTable.Start()
-	<-context.Background().Done()
+	connTable.Serve()
 }

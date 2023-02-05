@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"encoding/gob"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"sync"
@@ -47,7 +48,6 @@ func (c *PeerConnection) Close() {
 		return
 	}
 	close(c.sendChan)
-	close(c.receiveChan)
 	c.tracker.Finish()
 	c.isClosed = true
 }
@@ -170,12 +170,14 @@ func NewPeerTable(mtu int, device tun.Device, listener net.Listener, localNet ne
 	}
 }
 
-func (t *PeerTable) serveReadDeviceLoop() error {
+func (t *PeerTable) serveReadDeviceLoop() {
 	for {
 		packet := t.pool.Get().(*Packet)
 		n, err := t.device.Read(packet.Data, offset)
 		if err != nil {
-			return err
+			log.Printf("Tunnel read loop closed: %v, exiting", err)
+			t.Close()
+			return
 		}
 		if n == 0 {
 			continue
@@ -206,12 +208,16 @@ func (t *PeerTable) serveWriteDeviceLoop() {
 		t.device.Write(buffer.Data[:buffer.N], offset)
 		t.pool.Put(buffer)
 	}
+	log.Printf("Tunnel write loop closed")
+	t.Close()
 }
 
 func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 	for {
 		peerConn, err := t.listener.Accept()
 		if err != nil {
+			log.Printf("Tunnel channel closed: %v, exiting", err)
+			t.Close()
 			return
 		}
 		go func(peerConn net.Conn) {
@@ -241,10 +247,22 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 	}
 }
 
-func (t *PeerTable) Start() {
-	go t.servePeerIncomingConnnectionLoop()
-	go t.serveReadDeviceLoop()
-	go t.serveWriteDeviceLoop()
+func (t *PeerTable) Serve() {
+	wg := sync.WaitGroup{}
+	wg.Add(3)
+	go func() {
+		t.servePeerIncomingConnnectionLoop()
+		wg.Done()
+	}()
+	go func() {
+		t.serveReadDeviceLoop()
+		wg.Done()
+	}()
+	go func() {
+		t.serveWriteDeviceLoop()
+		wg.Done()
+	}()
+	wg.Wait()
 }
 
 func (t *PeerTable) Close() {
