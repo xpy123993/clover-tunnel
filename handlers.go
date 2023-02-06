@@ -114,23 +114,23 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	log.Printf("Internal net: %s", netip.PrefixFrom(localAddr, mask).String())
 	log.Printf("Listening at %s", listenAddr.String())
 
-	clientDialer := corenet.NewDialer(
-		[]string{toAddr.String()},
-		corenet.WithDialerQuicConfig(&quic.Config{KeepAlivePeriod: 5 * time.Second}),
-		corenet.WithDialerKCPConfig(corenet.DefaultKCPConfig()),
-		corenet.WithDialerRelayTLSConfig(tunnelTLSConfig), corenet.WithDialerDirectAccessCIDRBlockList([]netip.Prefix{
-			netip.MustParsePrefix("127.0.0.1/8"),
-			localNet,
-		}))
-	peerDialer := func(s string) (net.Conn, error) {
-		return clientDialer.Dial(path.Join(toAddr.Path, s))
-	}
-
 	listener, err := createListener(&listenAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	connTable := NewPeerTable(mtu, device, listener, localNet, localAddr.String(), peerDialer, 1000)
+
+	clientDialer := corenet.NewDialer(
+		[]string{toAddr.String()},
+		corenet.WithDialerQuicConfig(&quic.Config{KeepAlivePeriod: 5 * time.Second}),
+		corenet.WithDialerKCPConfig(corenet.DefaultKCPConfig()),
+		corenet.WithDialerBlockMultiListener(listener),
+		corenet.WithDialerRelayTLSConfig(tunnelTLSConfig), corenet.WithDialerDirectAccessCIDRBlockList([]netip.Prefix{
+			netip.MustParsePrefix("127.0.0.1/8"),
+			localNet,
+		}))
+	connTable := NewPeerTable(mtu, device, listener, localNet, localAddr.String(), func(s string) (net.Conn, error) {
+		return clientDialer.Dial(path.Join(toAddr.Path, s))
+	}, 1000)
 	defer device.Close()
 	connTable.Serve()
 }

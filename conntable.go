@@ -15,7 +15,8 @@ import (
 )
 
 type PeerConnection struct {
-	dialer      func() (net.Conn, error)
+	addr        string
+	dialer      func(string) (net.Conn, error)
 	sendChan    chan *Packet
 	receiveChan chan *Packet
 
@@ -28,8 +29,9 @@ type PeerConnection struct {
 	tracker      trace.EventLog
 }
 
-func NewConnection(addr string, dialer func() (net.Conn, error), receiveChan chan *Packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
+func NewConnection(addr string, dialer func(string) (net.Conn, error), receiveChan chan *Packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
 	return &PeerConnection{
+		addr:         addr,
 		dialer:       dialer,
 		sendChan:     make(chan *Packet, maxQueueSize),
 		receiveChan:  receiveChan,
@@ -108,7 +110,7 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 					conn.Close()
 				}
 				c.tracker.Printf("Initializing connection")
-				conn, err = c.dialer()
+				conn, err = c.dialer(c.addr)
 				if err == nil {
 					go c.receiveLoop(conn)
 				} else {
@@ -220,8 +222,7 @@ func (t *PeerTable) serveReadDeviceLoop() {
 			t.mu.Lock()
 			peerConn, exists := t.table[dst]
 			if !exists {
-				dstDialer := func() (net.Conn, error) { return t.dialToPeer(dst) }
-				peerConn = NewConnection(dst, dstDialer, t.receiveChan, &t.pool, t.maxQueueSize)
+				peerConn = NewConnection(dst, t.dialToPeer, t.receiveChan, &t.pool, t.maxQueueSize)
 				go peerConn.ChannelLoop(nil)
 				t.table[dst] = peerConn
 			}
@@ -264,8 +265,7 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 			defer t.mu.Unlock()
 			peerCh, exists := t.table[peerHello.FromAddr]
 			if !exists {
-				dstDialer := func() (net.Conn, error) { return t.dialToPeer(peerHello.FromAddr) }
-				peerCh = NewConnection(peerHello.FromAddr, dstDialer, t.receiveChan, &t.pool, t.maxQueueSize)
+				peerCh = NewConnection(peerHello.FromAddr, t.dialToPeer, t.receiveChan, &t.pool, t.maxQueueSize)
 				t.table[peerHello.FromAddr] = peerCh
 				go peerCh.ChannelLoop(peerConn)
 			} else {
