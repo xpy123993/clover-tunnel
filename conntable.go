@@ -43,6 +43,18 @@ func NewConnection(addr string, dialer func(string) (net.Conn, error), receiveCh
 	}
 }
 
+func (c *PeerConnection) RefreshLastActive() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastActive = time.Now()
+}
+
+func (t *PeerConnection) LastActive() time.Time {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.lastActive
+}
+
 func (c *PeerConnection) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -79,6 +91,7 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 			c.tracker.Errorf("Closed peer connection %v: %v", conn.RemoteAddr(), err)
 			return
 		}
+		c.RefreshLastActive()
 		packet.N = n + offset
 		c.mu.RLock()
 		if c.isClosed {
@@ -122,6 +135,8 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 		}
 		if _, err = writeBuffer(conn, packet.Data[:packet.N], offset); err != nil {
 			lastError = time.Now()
+		} else {
+			c.RefreshLastActive()
 		}
 		c.pool.Put(packet)
 	}
@@ -210,12 +225,14 @@ func (t *PeerTable) serveReadDeviceLoop() {
 			return
 		}
 		if n == 0 {
+			t.pool.Put(packet)
 			continue
 		}
 		packet.N = n + offset
 		dst := getDstKeyFromPacket(packet.Data[offset : n+offset])
 		dstIP, err := netip.ParseAddr(dst)
 		if err != nil {
+			t.pool.Put(packet)
 			continue
 		}
 		if t.localNet.Contains(dstIP) {
@@ -275,9 +292,37 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 	}
 }
 
+func (t *PeerTable) gcRoutine(done chan struct{}) {
+	timer := time.NewTicker(30 * time.Minute)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-timer.C:
+			t.mu.Lock()
+			if t.isClosed {
+				t.mu.Unlock()
+				return
+			}
+			for peer, conn := range t.table {
+				if time.Since(conn.LastActive()) > 30*time.Minute {
+					conn.Close()
+					delete(t.table, peer)
+				}
+			}
+			t.mu.Unlock()
+		}
+	}
+}
+
 func (t *PeerTable) Serve() {
 	wg := sync.WaitGroup{}
 	wg.Add(3)
+	gcDone := make(chan struct{})
+	defer close(gcDone)
+	go t.gcRoutine(gcDone)
 	go func() {
 		t.servePeerIncomingConnnectionLoop()
 		wg.Done()
