@@ -12,7 +12,6 @@ import (
 func redirectPipeExecute(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
 	return cmd.Run()
 }
 
