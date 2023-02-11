@@ -24,4 +24,5 @@ func PostTunnelSetup(localNet *netip.Prefix, devName string) error {
 }
 
 func PostTunnelCleanup(devName string) {
+	redirectPipeExecute("netsh", "interface", "delete", "interface", "name="+devName)
 }
