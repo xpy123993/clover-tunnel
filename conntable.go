@@ -14,6 +14,24 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+const offset = 4
+
+type PeerHello struct {
+	FromAddr string `json:"from-addr"`
+	ToAddr   string `json:"to-addr"`
+}
+
+type PeerResponse struct {
+	Success bool   `json:"success"`
+	Reason  string `json:"reason"`
+}
+
+type Packet struct {
+	Data     []byte
+	N        int
+	Capacity int
+}
+
 type PeerConnection struct {
 	addr        string
 	dialer      func(string) (net.Conn, error)

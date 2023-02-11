@@ -17,24 +17,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-const offset = 4
-
-type PeerHello struct {
-	FromAddr string `json:"from-addr"`
-	ToAddr   string `json:"to-addr"`
-}
-
-type PeerResponse struct {
-	Success bool   `json:"success"`
-	Reason  string `json:"reason"`
-}
-
-type Packet struct {
-	Data     []byte
-	N        int
-	Capacity int
-}
-
 func serveAsRelayServer(relayURL string) {
 	server := corenet.NewRelayServer(corenet.WithRelayServerForceEvictChannelSession(true))
 	log.Printf("Server starts serving at %s", relayURL)
@@ -95,7 +77,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		mtu = int(mtu64)
 	}
 	if len(devName) == 0 {
-		devName = "tun0"
+		devName = "yuki0"
 	}
 
 	listenAddr := *toAddr
@@ -110,9 +92,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		log.Fatalf("Failed to create TUN device: %v", err)
 	}
 	localNet := netip.PrefixFrom(localAddr, mask)
-	log.Printf("Local IP: %s", localAddr)
-	log.Printf("Internal net: %s", netip.PrefixFrom(localAddr, mask).String())
-	log.Printf("Listening at %s", listenAddr.String())
+	log.Printf("Start forwarding: [%s] %v => %v", devName, netip.PrefixFrom(localAddr, mask).String(), listenAddr.String())
 
 	listener, err := createListener(&listenAddr)
 	if err != nil {
