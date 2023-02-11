@@ -10,19 +10,19 @@ import (
 	"github.com/xpy123993/corenet"
 )
 
-func createDialer(dialerURL *url.URL) (func() (net.Conn, error), error) {
+func createDialer(dialerURL *url.URL) (func() (net.Conn, error), func() error, error) {
 	switch dialerURL.Scheme {
 	case "tcp":
 		return func() (net.Conn, error) {
 			return net.Dial("tcp", dialerURL.Host)
-		}, nil
+		}, nil, nil
 	case "ttf", "ktf", "quicf":
 		dialer := corenet.NewDialer([]string{dialerURL.String()}, corenet.WithDialerRelayTLSConfig(tunnelTLSConfig))
 		return func() (net.Conn, error) {
 			return dialer.Dial(dialerURL.Path)
-		}, nil
+		}, dialer.Close, nil
 	}
-	return nil, fmt.Errorf("URL scheme is not supported")
+	return nil, nil, fmt.Errorf("URL scheme is not supported")
 }
 
 func createCorenetListener(listenerURL *url.URL) (net.Listener, error) {

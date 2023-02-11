@@ -21,25 +21,32 @@ func serveAsRelayServer(relayURL string) {
 	server := corenet.NewRelayServer(corenet.WithRelayServerForceEvictChannelSession(true))
 	log.Printf("Server starts serving at %s", relayURL)
 	if err := server.ServeURL(relayURL, tunnelTLSConfig); err != nil {
-		log.Fatalf("Relay server returns error: %v", err)
+		log.Printf("Relay server returns error: %v", err)
 	}
 }
 
 func serverAsPipe(fromAddr, toAddr *url.URL) {
 	listener, err := createListener(fromAddr)
 	if err != nil {
-		log.Fatalf("Failed to process in address: %s", err.Error())
+		log.Printf("Failed to process in address: %s", err.Error())
+		return
 	}
-	dialer, err := createDialer(toAddr)
+	defer listener.Close()
+	dialer, closer, err := createDialer(toAddr)
 	if err != nil {
-		log.Fatalf("Failed to process out address: %s", err.Error())
+		log.Printf("Failed to process out address: %s", err.Error())
+		return
+	}
+	if closer != nil {
+		defer closer()
 	}
 	log.Printf("Start forwarding: %v => %v", fromAddr, toAddr)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Fatalf("Failed to accept connection: %v", err)
+			log.Printf("Failed to accept connection: %v", err)
+			return
 		}
 		go func(inConn net.Conn) {
 			defer inConn.Close()
@@ -89,15 +96,19 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	}
 	device, err := tun.CreateTUN(devName, mtu)
 	if err != nil {
-		log.Fatalf("Failed to create TUN device: %v", err)
+		log.Printf("Failed to create TUN device: %v", err)
+		return
 	}
+	defer device.Close()
 
 	log.Printf("Start forwarding: [%s] %v => %v", devName, netip.PrefixFrom(localAddr, mask).String(), listenAddr.String())
 
 	listener, err := createListener(&listenAddr)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Failed to publish network: %v", err)
+		return
 	}
+	defer listener.Close()
 
 	clientDialer := corenet.NewDialer(
 		[]string{toAddr.String()},
@@ -108,6 +119,8 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 			netip.MustParsePrefix("127.0.0.1/8"),
 			localNet,
 		}))
+	defer clientDialer.Close()
+
 	connTable := NewPeerTable(mtu, device, listener, localNet, localAddr.String(), clientDialer, toAddr.Path, 1000)
 	if len(*debugAddress) > 0 {
 		_, port, err := net.SplitHostPort(*debugAddress)
@@ -117,7 +130,6 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		}
 	}
 
-	defer device.Close()
 	if err := PostTunnelSetup(&localNet, devName); err != nil {
 		log.Printf("Cannot configure interface: %v", err)
 	}

@@ -6,19 +6,17 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 var (
-	tunnelTLSConfig *tls.Config
-	debugAddress    = flag.String("debug-address", "", "If not empty, an HTTP server will listen on that address.")
+	tunnelTLSConfig     *tls.Config
+	debugAddress        = flag.String("debug-address", "", "If not empty, an HTTP server will listen on that address.")
+	daemonMode          = flag.Bool("daemon", false, "If true, will retry on failure. Should not use in systemd.")
+	daemonRetryInterval = flag.Duration("duration", 3*time.Second, "In daemon mode, specifies the retry interval.")
 )
 
-func main() {
-	flag.Parse()
-	if len(*debugAddress) > 0 {
-		go http.ListenAndServe(*debugAddress, nil)
-	}
-
+func serve() {
 	tlsConfig, err := getTLSConfigFromEmbeded()
 	if err != nil {
 		log.Fatalf("Corrupted: cannot load embedded certificate: %v", err)
@@ -48,4 +46,18 @@ func main() {
 		return
 	}
 	serverAsPipe(fromURL, toURL)
+}
+
+func main() {
+	flag.Parse()
+	if len(*debugAddress) > 0 {
+		go http.ListenAndServe(*debugAddress, nil)
+	}
+
+	serve()
+	for *daemonMode {
+		log.Printf("Will retry in %s", *daemonRetryInterval)
+		time.Sleep(*daemonRetryInterval)
+		serve()
+	}
 }

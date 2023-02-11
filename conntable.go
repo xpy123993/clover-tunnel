@@ -330,11 +330,14 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 
 func (t *PeerTable) backgroundRoutine(done chan struct{}) {
 	timer := time.NewTicker(30 * time.Minute)
-	defer timer.Stop()
-
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	defer close(sigs)
+
+	defer func() {
+		timer.Stop()
+		signal.Stop(sigs)
+		close(sigs)
+	}()
 
 	for {
 		select {
