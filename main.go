@@ -6,22 +6,15 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-
-	"golang.org/x/net/trace"
 )
 
 var (
 	tunnelTLSConfig *tls.Config
-
-	debugAddress = flag.String("debug-address", "", "If not empty, an HTTP server will listen on that address.")
+	debugAddress    = flag.String("debug-address", "", "If not empty, an HTTP server will listen on that address.")
 )
 
 func main() {
 	flag.Parse()
-	trace.AuthRequest = func(req *http.Request) (any bool, sensitive bool) {
-		return true, true
-	}
-
 	if len(*debugAddress) > 0 {
 		go http.ListenAndServe(*debugAddress, nil)
 	}

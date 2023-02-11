@@ -5,14 +5,17 @@ import (
 	"io"
 	"log"
 	"net"
-	_ "net/http/pprof"
+	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"os/signal"
 	"path"
 	"strconv"
+	"syscall"
 	"time"
 
-	"github.com/lucas-clemente/quic-go"
+	"github.com/quic-go/quic-go"
 	"github.com/xpy123993/corenet"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -79,11 +82,11 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	if len(devName) == 0 {
 		devName = "yuki0"
 	}
-
 	listenAddr := *toAddr
 	listenAddr.Path = path.Join(toAddr.Path, fromAddr.Host)
 
 	localAddr, err := netip.ParseAddr(fromAddr.Host)
+	localNet := netip.PrefixFrom(localAddr, mask)
 	if err != nil {
 		log.Fatalf("Invalid TUN bind address: %v", err)
 	}
@@ -91,7 +94,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	if err != nil {
 		log.Fatalf("Failed to create TUN device: %v", err)
 	}
-	localNet := netip.PrefixFrom(localAddr, mask)
+
 	log.Printf("Start forwarding: [%s] %v => %v", devName, netip.PrefixFrom(localAddr, mask).String(), listenAddr.String())
 
 	listener, err := createListener(&listenAddr)
@@ -108,9 +111,23 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 			netip.MustParsePrefix("127.0.0.1/8"),
 			localNet,
 		}))
-	connTable := NewPeerTable(mtu, device, listener, localNet, localAddr.String(), func(s string) (net.Conn, error) {
-		return clientDialer.Dial(path.Join(toAddr.Path, s))
-	}, 1000)
+	connTable := NewPeerTable(mtu, device, listener, localNet, localAddr.String(), clientDialer, toAddr.Path, 1000)
+	if len(*debugAddress) > 0 {
+		_, port, err := net.SplitHostPort(*debugAddress)
+		if err == nil {
+			http.HandleFunc("/yukicat/"+devName, connTable.ServeFunc)
+			log.Printf("Tunnel state is exposed to http://127.0.0.1:%s/yukicat/%s", port, devName)
+		}
+	}
+	if err := PostTunnelSetup(&localNet, devName); err != nil {
+		log.Printf("Cannot configure interface: %v", err)
+	}
+
 	defer device.Close()
-	connTable.Serve()
+	defer PostTunnelCleanup(devName)
+	go connTable.Serve()
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	<-sigs
 }

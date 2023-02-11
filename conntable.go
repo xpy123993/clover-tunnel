@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
+	"path"
+	"sort"
 	"sync"
 	"time"
 
-	"golang.org/x/net/trace"
+	"github.com/xpy123993/corenet"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -38,29 +41,42 @@ type PeerConnection struct {
 	sendChan    chan *Packet
 	receiveChan chan *Packet
 
-	mu         sync.RWMutex
-	lastActive time.Time
-	isClosed   bool
-	pool       *sync.Pool
+	mu                     sync.RWMutex
+	lastActive             time.Time
+	isClosed               bool
+	pool                   *sync.Pool
+	sendDropByteCounter    int64
+	receiveDropByteCounter int64
+	sendByteCounter        int64
+	receiveByteCounter     int64
 
 	maxQueueSize int
-	tracker      trace.EventLog
 }
 
 func NewConnection(addr string, dialer func(string) (net.Conn, error), receiveChan chan *Packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
 	return &PeerConnection{
-		addr:         addr,
-		dialer:       dialer,
-		sendChan:     make(chan *Packet, maxQueueSize),
-		receiveChan:  receiveChan,
-		lastActive:   time.Now(),
-		isClosed:     false,
-		pool:         pool,
-		maxQueueSize: maxQueueSize,
-		tracker:      trace.NewEventLog("Peer", "Connection to "+addr),
+		addr:                   addr,
+		dialer:                 dialer,
+		sendChan:               make(chan *Packet, maxQueueSize),
+		receiveChan:            receiveChan,
+		lastActive:             time.Now(),
+		isClosed:               false,
+		pool:                   pool,
+		maxQueueSize:           maxQueueSize,
+		sendDropByteCounter:    0,
+		receiveDropByteCounter: 0,
+		sendByteCounter:        0,
+		receiveByteCounter:     0,
 	}
 }
 
+func (c *PeerConnection) Status() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return fmt.Sprintf("Last active: %s\nSend queue size: %d\nTX bytes: %d, RX bytes: %d\nError TX bytes: %d, RX bytes: %d\n",
+		c.lastActive, len(c.sendChan), c.sendByteCounter, c.receiveByteCounter, c.sendDropByteCounter, c.receiveDropByteCounter)
+}
 func (c *PeerConnection) RefreshLastActive() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -80,25 +96,25 @@ func (c *PeerConnection) Close() {
 		return
 	}
 	close(c.sendChan)
-	c.tracker.Finish()
 	c.isClosed = true
 }
 
 func (c *PeerConnection) Send(p *Packet) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.isClosed {
 		return
 	}
+	pendingBytes := p.N
 	select {
 	case c.sendChan <- p:
+		c.sendByteCounter += int64(pendingBytes)
 	default:
-		c.tracker.Errorf("Send loop is full: some packets dropped")
+		c.sendDropByteCounter += int64(pendingBytes)
 	}
 }
 
 func (c *PeerConnection) receiveLoop(conn net.Conn) {
-	c.tracker.Printf("Starting receiving loop for %v", conn.RemoteAddr())
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	for {
@@ -106,22 +122,22 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 		packet.N = 0
 		n, err := readBuffer(reader, packet.Data[offset:])
 		if err != nil {
-			c.tracker.Errorf("Closed peer connection %v: %v", conn.RemoteAddr(), err)
 			return
 		}
 		c.RefreshLastActive()
 		packet.N = n + offset
-		c.mu.RLock()
+		c.mu.Lock()
 		if c.isClosed {
-			c.mu.RUnlock()
+			c.mu.Unlock()
 			return
 		}
 		select {
 		case c.receiveChan <- packet:
+			c.receiveByteCounter += int64(n)
 		default:
-			c.tracker.Errorf("Receive loop is full: some packets dropped")
+			c.receiveDropByteCounter += int64(n)
 		}
-		c.mu.RUnlock()
+		c.mu.Unlock()
 	}
 }
 
@@ -133,19 +149,16 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 	} else {
 		go c.receiveLoop(conn)
 	}
-	c.tracker.Printf("Starting channel loop")
 	for packet := range c.sendChan {
 		if err != nil {
 			if time.Since(lastError) > time.Second {
 				if conn != nil {
 					conn.Close()
 				}
-				c.tracker.Printf("Initializing connection")
 				conn, err = c.dialer(c.addr)
 				if err == nil {
 					go c.receiveLoop(conn)
 				} else {
-					c.tracker.Errorf("Initializing connection failed: %v", err)
 					lastError = time.Now()
 				}
 			}
@@ -173,14 +186,15 @@ type PeerTable struct {
 	receiveChan chan *Packet
 	pool        sync.Pool
 
-	mtu          int
-	localNet     netip.Prefix
-	localAddr    string
-	dialer       func(string) (net.Conn, error)
-	maxQueueSize int
+	mtu            int
+	localNet       netip.Prefix
+	localAddr      string
+	dialer         *corenet.Dialer
+	dialerBaseAddr string
+	maxQueueSize   int
 }
 
-func NewPeerTable(mtu int, device tun.Device, listener net.Listener, localNet netip.Prefix, localAddr string, dialer func(string) (net.Conn, error), maxQueueSize int) *PeerTable {
+func NewPeerTable(mtu int, device tun.Device, listener net.Listener, localNet netip.Prefix, localAddr string, dialer *corenet.Dialer, dialerBaseAddr string, maxQueueSize int) *PeerTable {
 	return &PeerTable{
 		isClosed:    false,
 		table:       map[string]*PeerConnection{},
@@ -190,42 +204,31 @@ func NewPeerTable(mtu int, device tun.Device, listener net.Listener, localNet ne
 		pool: sync.Pool{New: func() any {
 			return &Packet{Data: make([]byte, mtu+offset), N: 0, Capacity: mtu + offset}
 		}},
-		mtu:          mtu,
-		localNet:     localNet,
-		localAddr:    localAddr,
-		dialer:       dialer,
-		maxQueueSize: maxQueueSize,
+		mtu:            mtu,
+		localNet:       localNet,
+		localAddr:      localAddr,
+		dialer:         dialer,
+		dialerBaseAddr: dialerBaseAddr,
+		maxQueueSize:   maxQueueSize,
 	}
 }
 
 func (t *PeerTable) dialToPeer(s string) (net.Conn, error) {
-	tracker := trace.New("corenet.Dial", "New connection to "+s)
-	defer tracker.Finish()
-	conn, err := t.dialer(s)
+	conn, err := t.dialer.Dial(path.Join(t.dialerBaseAddr, s))
 	if err != nil {
-		tracker.LazyPrintf(err.Error())
-		tracker.SetError()
 		return nil, err
 	}
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := gob.NewEncoder(conn).Encode(PeerHello{FromAddr: t.localAddr, ToAddr: s}); err != nil {
-		tracker.LazyPrintf("Handshake failed on request")
-		tracker.LazyPrintf(err.Error())
-		tracker.SetError()
 		conn.Close()
 		return nil, err
 	}
 	resp := PeerResponse{}
 	if err := gob.NewDecoder(conn).Decode(&resp); err != nil {
-		tracker.LazyPrintf("Handshake failed on response")
-		tracker.LazyPrintf(err.Error())
-		tracker.SetError()
 		conn.Close()
 		return nil, err
 	}
 	if !resp.Success {
-		tracker.LazyPrintf("Handshake failed by remote peer: %s", resp.Reason)
-		tracker.SetError()
 		conn.Close()
 		return nil, fmt.Errorf("app error: %s", resp.Reason)
 	}
@@ -371,4 +374,27 @@ func (t *PeerTable) Close() {
 	t.listener.Close()
 	t.device.Close()
 	close(t.receiveChan)
+}
+
+func (t *PeerTable) ServeFunc(w http.ResponseWriter, r *http.Request) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	keys := make([]string, 0, len(t.table))
+	for peerName := range t.table {
+		keys = append(keys, peerName)
+	}
+	sort.Strings(keys)
+
+	fmt.Fprintf(w, "Connection Table %s\n", t.localNet.String())
+	for _, peerName := range keys {
+		fmt.Fprintf(w, "\nPeer: %s\n", peerName)
+		sessionID, err := t.dialer.GetSessionID(path.Join(t.dialerBaseAddr, peerName))
+		if err == nil {
+			fmt.Fprintf(w, "Session ID: %s\n", sessionID)
+		} else {
+			fmt.Fprintf(w, "Session lost: %v\n", err)
+		}
+		fmt.Fprintf(w, "%s\n", t.table[peerName].Status())
+	}
 }
