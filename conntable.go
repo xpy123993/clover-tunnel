@@ -8,9 +8,12 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"os/signal"
 	"path"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/xpy123993/corenet"
@@ -241,8 +244,10 @@ func (t *PeerTable) serveReadDeviceLoop() {
 		packet := t.pool.Get().(*Packet)
 		n, err := t.device.Read(packet.Data, offset)
 		if err != nil {
-			log.Printf("Tunnel read loop closed: %v, exiting", err)
-			t.Close()
+			if !t.IsClosed() {
+				log.Printf("Tunnel read loop closed: %v, exiting", err)
+				t.Close()
+			}
 			return
 		}
 		if n == 0 {
@@ -275,16 +280,26 @@ func (t *PeerTable) serveWriteDeviceLoop() {
 		t.device.Write(buffer.Data[:buffer.N], offset)
 		t.pool.Put(buffer)
 	}
-	log.Printf("Tunnel write loop closed")
-	t.Close()
+	if !t.IsClosed() {
+		log.Printf("Tunnel write loop closed")
+		t.Close()
+	}
+}
+
+func (t *PeerTable) IsClosed() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.isClosed
 }
 
 func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 	for {
 		peerConn, err := t.listener.Accept()
 		if err != nil {
-			log.Printf("Tunnel channel closed: %v, exiting", err)
-			t.Close()
+			if !t.IsClosed() {
+				log.Printf("Tunnel channel closed: %v, exiting", err)
+				t.Close()
+			}
 			return
 		}
 		go func(peerConn net.Conn) {
@@ -313,12 +328,19 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 	}
 }
 
-func (t *PeerTable) gcRoutine(done chan struct{}) {
+func (t *PeerTable) backgroundRoutine(done chan struct{}) {
 	timer := time.NewTicker(30 * time.Minute)
 	defer timer.Stop()
 
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	defer close(sigs)
+
 	for {
 		select {
+		case <-sigs:
+			t.Close()
+			return
 		case <-done:
 			return
 		case <-timer.C:
@@ -343,7 +365,7 @@ func (t *PeerTable) Serve() {
 	wg.Add(3)
 	gcDone := make(chan struct{})
 	defer close(gcDone)
-	go t.gcRoutine(gcDone)
+	go t.backgroundRoutine(gcDone)
 	go func() {
 		t.servePeerIncomingConnnectionLoop()
 		wg.Done()
@@ -357,6 +379,7 @@ func (t *PeerTable) Serve() {
 		wg.Done()
 	}()
 	wg.Wait()
+	log.Printf("Tunnel serve loop closed")
 }
 
 func (t *PeerTable) Close() {

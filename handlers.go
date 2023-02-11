@@ -8,11 +8,8 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
-	"os/signal"
 	"path"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -119,15 +116,11 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 			log.Printf("Tunnel state is exposed to http://127.0.0.1:%s/yukicat/%s", port, devName)
 		}
 	}
+
+	defer device.Close()
 	if err := PostTunnelSetup(&localNet, devName); err != nil {
 		log.Printf("Cannot configure interface: %v", err)
 	}
-
-	defer device.Close()
-	defer PostTunnelCleanup(devName)
-	go connTable.Serve()
-
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	<-sigs
+	connTable.Serve()
+	PostTunnelCleanup(devName)
 }
