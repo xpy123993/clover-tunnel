@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"path"
 	"strconv"
 	"time"
@@ -69,6 +70,8 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	mask := 24
 	mtu := 1380
 	devName := fromAddr.Query().Get("dev")
+	hostname := fromAddr.Query().Get("hostname")
+	dnsSuffix := fromAddr.Query().Get("dnssuffix")
 	if maskStr := fromAddr.Query().Get("mask"); len(maskStr) > 0 {
 		mask64, err := strconv.ParseInt(maskStr, 10, 32)
 		if err != nil {
@@ -85,6 +88,16 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	}
 	if len(devName) == 0 {
 		devName = "yuki0"
+	}
+	if len(hostname) == 0 {
+		var err error
+		hostname, err = os.Hostname()
+		if err != nil {
+			hostname = "unknown"
+		}
+	}
+	if len(dnsSuffix) == 0 {
+		dnsSuffix = ".yukicat"
 	}
 	listenAddr := *toAddr
 	listenAddr.Path = path.Join(toAddr.Path, fromAddr.Host)
@@ -121,7 +134,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		}))
 	defer clientDialer.Close()
 
-	connTable := NewPeerTable(mtu, device, listener, localNet, localAddr.String(), clientDialer, toAddr.Path, 1000)
+	connTable := NewPeerTable(mtu, device, listener, localNet, localAddr.String(), clientDialer, toAddr.Path, 1000, hostname, dnsSuffix)
 	if len(*debugAddress) > 0 {
 		_, port, err := net.SplitHostPort(*debugAddress)
 		if err == nil {

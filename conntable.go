@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -23,13 +24,17 @@ import (
 const offset = 4
 
 type PeerHello struct {
-	FromAddr string `json:"from-addr"`
-	ToAddr   string `json:"to-addr"`
+	FromAddr string
+	ToAddr   string
+
+	Hostname string
 }
 
 type PeerResponse struct {
-	Success bool   `json:"success"`
-	Reason  string `json:"reason"`
+	Success bool
+	Reason  string
+
+	Hostname string
 }
 
 type Packet struct {
@@ -40,7 +45,7 @@ type Packet struct {
 
 type PeerConnection struct {
 	addr        string
-	dialer      func(string) (net.Conn, error)
+	dialer      func(string) (net.Conn, *PeerResponse, error)
 	sendChan    chan *Packet
 	receiveChan chan *Packet
 
@@ -52,11 +57,12 @@ type PeerConnection struct {
 	receiveDropByteCounter int64
 	sendByteCounter        int64
 	receiveByteCounter     int64
+	peerHostname           string
 
 	maxQueueSize int
 }
 
-func NewConnection(addr string, dialer func(string) (net.Conn, error), receiveChan chan *Packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
+func NewConnection(addr string, dialer func(string) (net.Conn, *PeerResponse, error), receiveChan chan *Packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
 	return &PeerConnection{
 		addr:                   addr,
 		dialer:                 dialer,
@@ -80,6 +86,19 @@ func (c *PeerConnection) Status() string {
 	return fmt.Sprintf("Last active: %s\nSend queue size: %d\nTX bytes: %d, RX bytes: %d\nError TX bytes: %d, RX bytes: %d\n",
 		c.lastActive, len(c.sendChan), c.sendByteCounter, c.receiveByteCounter, c.sendDropByteCounter, c.receiveDropByteCounter)
 }
+
+func (c *PeerConnection) GetHostName() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.peerHostname
+}
+
+func (c *PeerConnection) SetHostName(hostname string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.peerHostname = hostname
+}
+
 func (c *PeerConnection) RefreshLastActive() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -146,6 +165,7 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 
 func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 	var err error
+	var resp *PeerResponse
 	lastError := time.Time{}
 	if conn == nil {
 		err = fmt.Errorf("uninitialized")
@@ -158,9 +178,10 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 				if conn != nil {
 					conn.Close()
 				}
-				conn, err = c.dialer(c.addr)
+				conn, resp, err = c.dialer(c.addr)
 				if err == nil {
 					go c.receiveLoop(conn)
+					c.SetHostName(resp.Hostname)
 				} else {
 					lastError = time.Now()
 				}
@@ -179,6 +200,33 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 	}
 }
 
+type stringTable struct {
+	mu    sync.RWMutex
+	table map[string]string
+}
+
+func newStringTable() *stringTable {
+	return &stringTable{table: make(map[string]string)}
+}
+
+func (t *stringTable) Lookup(key string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.table[key]
+}
+
+func (t *stringTable) Update(key, val string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.table[key] = val
+}
+
+func (t *stringTable) Erase(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.table, key)
+}
+
 type PeerTable struct {
 	mu       sync.Mutex
 	isClosed bool
@@ -195,12 +243,19 @@ type PeerTable struct {
 	dialer         *corenet.Dialer
 	dialerBaseAddr string
 	maxQueueSize   int
+	hostname       string
+	dnsSuffix      string
+	dnsTable       *stringTable
 }
 
-func NewPeerTable(mtu int, device tun.Device, listener net.Listener, localNet netip.Prefix, localAddr string, dialer *corenet.Dialer, dialerBaseAddr string, maxQueueSize int) *PeerTable {
+func NewPeerTable(mtu int, device tun.Device,
+	listener net.Listener, localNet netip.Prefix, localAddr string,
+	dialer *corenet.Dialer, dialerBaseAddr string,
+	maxQueueSize int, hostname string, dnsSuffix string) *PeerTable {
 	return &PeerTable{
 		isClosed:    false,
 		table:       map[string]*PeerConnection{},
+		dnsSuffix:   dnsSuffix,
 		device:      device,
 		listener:    listener,
 		receiveChan: make(chan *Packet, maxQueueSize),
@@ -213,30 +268,33 @@ func NewPeerTable(mtu int, device tun.Device, listener net.Listener, localNet ne
 		dialer:         dialer,
 		dialerBaseAddr: dialerBaseAddr,
 		maxQueueSize:   maxQueueSize,
+		hostname:       hostname,
+		dnsTable:       newStringTable(),
 	}
 }
 
-func (t *PeerTable) dialToPeer(s string) (net.Conn, error) {
+func (t *PeerTable) dialToPeer(s string) (net.Conn, *PeerResponse, error) {
 	conn, err := t.dialer.Dial(path.Join(t.dialerBaseAddr, s))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := gob.NewEncoder(conn).Encode(PeerHello{FromAddr: t.localAddr, ToAddr: s}); err != nil {
+	if err := gob.NewEncoder(conn).Encode(PeerHello{FromAddr: t.localAddr, ToAddr: s, Hostname: t.hostname}); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	resp := PeerResponse{}
 	if err := gob.NewDecoder(conn).Decode(&resp); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	if !resp.Success {
 		conn.Close()
-		return nil, fmt.Errorf("app error: %s", resp.Reason)
+		return nil, nil, fmt.Errorf("app error: %s", resp.Reason)
 	}
 	conn.SetDeadline(time.Time{})
-	return conn, nil
+	t.dnsTable.Update(resp.Hostname, s)
+	return conn, &resp, nil
 }
 
 func (t *PeerTable) serveReadDeviceLoop() {
@@ -292,6 +350,13 @@ func (t *PeerTable) IsClosed() bool {
 	return t.isClosed
 }
 
+func (t *PeerTable) LookupDNS(hostname string) string {
+	if !strings.HasSuffix(hostname, t.dnsSuffix) {
+		return ""
+	}
+	return t.dnsTable.Lookup(hostname)
+}
+
 func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 	for {
 		peerConn, err := t.listener.Accept()
@@ -311,7 +376,7 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 				gob.NewEncoder(peerConn).Encode(PeerResponse{Success: false, Reason: fmt.Sprintf("expect local addr: %s, got %s", t.localAddr, peerHello.ToAddr)})
 				return
 			}
-			if err := gob.NewEncoder(peerConn).Encode(PeerResponse{Success: true}); err != nil {
+			if err := gob.NewEncoder(peerConn).Encode(PeerResponse{Success: true, Hostname: t.hostname}); err != nil {
 				return
 			}
 			t.mu.Lock()
@@ -324,6 +389,8 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 			} else {
 				go peerCh.receiveLoop(peerConn)
 			}
+			peerCh.SetHostName(peerHello.Hostname)
+			t.dnsTable.Update(peerHello.Hostname, peerHello.FromAddr)
 		}(peerConn)
 	}
 }
@@ -354,8 +421,11 @@ func (t *PeerTable) backgroundRoutine(done chan struct{}) {
 			}
 			for peer, conn := range t.table {
 				if time.Since(conn.LastActive()) > 30*time.Minute {
+					t.dnsTable.Erase(conn.addr)
 					conn.Close()
 					delete(t.table, peer)
+				} else {
+					t.dnsTable.Update(conn.peerHostname, conn.addr)
 				}
 			}
 			t.mu.Unlock()
@@ -414,13 +484,14 @@ func (t *PeerTable) ServeFunc(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Fprintf(w, "Connection Table %s\n", t.localNet.String())
 	for _, peerName := range keys {
-		fmt.Fprintf(w, "\nPeer: %s\n", peerName)
+		peerConn := t.table[peerName]
+		fmt.Fprintf(w, "\nPeer: %s\nHostname: %s\n", peerName, peerConn.GetHostName())
 		sessionID, err := t.dialer.GetSessionID(path.Join(t.dialerBaseAddr, peerName))
 		if err == nil {
 			fmt.Fprintf(w, "Session ID: %s\n", sessionID)
 		} else {
 			fmt.Fprintf(w, "Session lost: %v\n", err)
 		}
-		fmt.Fprintf(w, "%s\n", t.table[peerName].Status())
+		fmt.Fprintf(w, "%s\n", peerConn.Status())
 	}
 }
