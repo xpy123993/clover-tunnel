@@ -3,6 +3,7 @@ module github.com/xpy123993/yukicat
 go 1.20
 
 require (
+	github.com/miekg/dns v1.1.50
 	github.com/quic-go/quic-go v0.32.0
 	github.com/xpy123993/corenet v0.0.59
 	golang.zx2c4.com/wireguard v0.0.0-20220920152132-bb719d3a6e2c
@@ -14,7 +15,6 @@ require (
 	github.com/google/pprof v0.0.0-20230111200839-76d1ae5aea2b // indirect
 	github.com/klauspost/cpuid/v2 v2.2.3 // indirect
 	github.com/klauspost/reedsolomon v1.11.5 // indirect
-	github.com/miekg/dns v1.1.50 // indirect
 	github.com/onsi/ginkgo/v2 v2.7.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/qtls-go1-18 v0.2.0 // indirect

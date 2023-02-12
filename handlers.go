@@ -97,7 +97,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		}
 	}
 	if len(dnsSuffix) == 0 {
-		dnsSuffix = ".yukicat"
+		dnsSuffix = "yukicat"
 	}
 	listenAddr := *toAddr
 	listenAddr.Path = path.Join(toAddr.Path, fromAddr.Host)
@@ -143,7 +143,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		}
 	}
 
-	if err := PostTunnelSetup(&localNet, devName); err != nil {
+	if err := PostTunnelSetup(&localNet, devName, dnsSuffix); err != nil {
 		log.Printf("Cannot configure interface: %v", err)
 	}
 	connTable.Serve()

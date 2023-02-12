@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/xpy123993/corenet"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -246,13 +247,14 @@ type PeerTable struct {
 	hostname       string
 	dnsSuffix      string
 	dnsTable       *stringTable
+	dnsServer      *dns.Server
 }
 
 func NewPeerTable(mtu int, device tun.Device,
 	listener net.Listener, localNet netip.Prefix, localAddr string,
 	dialer *corenet.Dialer, dialerBaseAddr string,
 	maxQueueSize int, hostname string, dnsSuffix string) *PeerTable {
-	return &PeerTable{
+	table := &PeerTable{
 		isClosed:    false,
 		table:       map[string]*PeerConnection{},
 		dnsSuffix:   dnsSuffix,
@@ -271,6 +273,8 @@ func NewPeerTable(mtu int, device tun.Device,
 		hostname:       hostname,
 		dnsTable:       newStringTable(),
 	}
+	table.dnsServer = table.SetupDNSServer()
+	return table
 }
 
 func (t *PeerTable) dialToPeer(s string) (net.Conn, *PeerResponse, error) {
@@ -351,10 +355,11 @@ func (t *PeerTable) IsClosed() bool {
 }
 
 func (t *PeerTable) LookupDNS(hostname string) string {
-	if !strings.HasSuffix(hostname, t.dnsSuffix) {
+	fullSuffix := "." + t.dnsSuffix + "."
+	if !strings.HasSuffix(hostname, fullSuffix) {
 		return ""
 	}
-	return t.dnsTable.Lookup(hostname)
+	return t.dnsTable.Lookup(strings.TrimSuffix(hostname, fullSuffix))
 }
 
 func (t *PeerTable) servePeerIncomingConnnectionLoop() {
@@ -433,9 +438,31 @@ func (t *PeerTable) backgroundRoutine(done chan struct{}) {
 	}
 }
 
+func (t *PeerTable) SetupDNSServer() *dns.Server {
+	server := &dns.Server{Addr: t.localAddr + ":53", Net: "udp"}
+	server.Handler = dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		msg := dns.Msg{}
+		msg.SetReply(r)
+		switch r.Question[0].Qtype {
+		case dns.TypeA:
+			msg.Authoritative = true
+			domain := msg.Question[0].Name
+			address := t.LookupDNS(r.Question[0].Name)
+			if len(address) > 0 {
+				msg.Answer = append(msg.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+					A:   net.ParseIP(address),
+				})
+			}
+		}
+		w.WriteMsg(&msg)
+	})
+	return server
+}
+
 func (t *PeerTable) Serve() {
 	wg := sync.WaitGroup{}
-	wg.Add(3)
+	wg.Add(4)
 	gcDone := make(chan struct{})
 	defer close(gcDone)
 	go t.backgroundRoutine(gcDone)
@@ -449,6 +476,10 @@ func (t *PeerTable) Serve() {
 	}()
 	go func() {
 		t.serveWriteDeviceLoop()
+		wg.Done()
+	}()
+	go func() {
+		t.dnsServer.ListenAndServe()
 		wg.Done()
 	}()
 	wg.Wait()
@@ -469,6 +500,7 @@ func (t *PeerTable) Close() {
 	}
 	t.listener.Close()
 	t.device.Close()
+	t.dnsServer.Shutdown()
 	close(t.receiveChan)
 }
 
@@ -485,7 +517,7 @@ func (t *PeerTable) ServeFunc(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Connection Table %s\n", t.localNet.String())
 	for _, peerName := range keys {
 		peerConn := t.table[peerName]
-		fmt.Fprintf(w, "\nPeer: %s\nHostname: %s\n", peerName, peerConn.GetHostName())
+		fmt.Fprintf(w, "\nPeer: %s\nHostname: %s\n", peerName, fmt.Sprintf("%s.%s", peerConn.GetHostName(), t.dnsSuffix))
 		sessionID, err := t.dialer.GetSessionID(path.Join(t.dialerBaseAddr, peerName))
 		if err == nil {
 			fmt.Fprintf(w, "Session ID: %s\n", sessionID)
