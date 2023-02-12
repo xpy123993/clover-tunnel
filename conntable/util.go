@@ -1,13 +1,13 @@
-package main
+package conntable
 
 import (
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"sync"
 )
 
-// getDstKeyFromPacket returns the destination key of the packets
 func getDstKeyFromPacket(packet []byte) string {
 	switch packet[0] >> 4 {
 	case 4:
@@ -37,4 +37,42 @@ func readBuffer(reader io.Reader, buf []byte) (int, error) {
 		return 0, fmt.Errorf("invalid buffer size received")
 	}
 	return io.ReadFull(reader, buf[:buflength])
+}
+
+type stringTable struct {
+	mu           sync.RWMutex
+	table        map[string]string
+	reverseTable map[string]string
+}
+
+func newStringTable() *stringTable {
+	return &stringTable{table: make(map[string]string), reverseTable: make(map[string]string)}
+}
+
+func (t *stringTable) Lookup(key string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.table[key]
+}
+
+func (t *stringTable) ReverseLookup(key string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.reverseTable[key]
+}
+
+func (t *stringTable) Update(key, val string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.table[key] = val
+	t.reverseTable[val] = key
+}
+
+func (t *stringTable) Erase(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if val, exist := t.table[key]; exist && len(val) > 0 {
+		delete(t.reverseTable, val)
+	}
+	delete(t.table, key)
 }

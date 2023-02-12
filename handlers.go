@@ -15,6 +15,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/xpy123993/corenet"
+	"github.com/xpy123993/yukicat/conntable"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -133,8 +134,14 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 			localNet,
 		}))
 	defer clientDialer.Close()
-
-	connTable := NewPeerTable(mtu, device, listener, localNet, localAddr.String(), clientDialer, toAddr.Path, 1000, hostname, dnsSuffix)
+	localInfo := conntable.LocalPeerInfo{
+		MTU:         mtu,
+		Hostname:    hostname,
+		LocalNet:    &localNet,
+		Domain:      dnsSuffix,
+		ChannelRoot: toAddr.Path,
+	}
+	connTable := conntable.NewPeerTable(device, listener, clientDialer, 1000, &localInfo)
 	if len(*debugAddress) > 0 {
 		_, port, err := net.SplitHostPort(*debugAddress)
 		if err == nil {
@@ -143,9 +150,9 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		}
 	}
 
-	if err := PostTunnelSetup(&localNet, devName, dnsSuffix); err != nil {
+	if err := conntable.PostTunnelSetup(&localNet, devName, dnsSuffix); err != nil {
 		log.Printf("Cannot configure interface: %v", err)
 	}
 	connTable.Serve()
-	PostTunnelCleanup(devName, dnsSuffix)
+	conntable.PostTunnelCleanup(devName, dnsSuffix)
 }
