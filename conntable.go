@@ -58,7 +58,6 @@ type PeerConnection struct {
 	receiveDropByteCounter int64
 	sendByteCounter        int64
 	receiveByteCounter     int64
-	peerHostname           string
 
 	maxQueueSize int
 }
@@ -88,24 +87,6 @@ func (c *PeerConnection) Status() string {
 		c.lastActive, len(c.sendChan), c.sendByteCounter, c.receiveByteCounter, c.sendDropByteCounter, c.receiveDropByteCounter)
 }
 
-func (c *PeerConnection) GetHostName() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.peerHostname
-}
-
-func (c *PeerConnection) SetHostName(hostname string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.peerHostname = hostname
-}
-
-func (c *PeerConnection) RefreshLastActive() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.lastActive = time.Now()
-}
-
 func (t *PeerConnection) LastActive() time.Time {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -132,8 +113,10 @@ func (c *PeerConnection) Send(p *Packet) {
 	select {
 	case c.sendChan <- p:
 		c.sendByteCounter += int64(pendingBytes)
+		c.lastActive = time.Now()
 	default:
 		c.sendDropByteCounter += int64(pendingBytes)
+		c.pool.Put(p)
 	}
 }
 
@@ -147,7 +130,6 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 		if err != nil {
 			return
 		}
-		c.RefreshLastActive()
 		packet.N = n + offset
 		c.mu.Lock()
 		if c.isClosed {
@@ -157,8 +139,10 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 		select {
 		case c.receiveChan <- packet:
 			c.receiveByteCounter += int64(n)
+			c.lastActive = time.Now()
 		default:
 			c.receiveDropByteCounter += int64(n)
+			c.pool.Put(packet)
 		}
 		c.mu.Unlock()
 	}
@@ -166,7 +150,6 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 
 func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 	var err error
-	var resp *PeerResponse
 	lastError := time.Time{}
 	if conn == nil {
 		err = fmt.Errorf("uninitialized")
@@ -179,10 +162,9 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 				if conn != nil {
 					conn.Close()
 				}
-				conn, resp, err = c.dialer(c.addr)
+				conn, _, err = c.dialer(c.addr)
 				if err == nil {
 					go c.receiveLoop(conn)
-					c.SetHostName(resp.Hostname)
 				} else {
 					lastError = time.Now()
 				}
@@ -191,8 +173,6 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 		}
 		if _, err = writeBuffer(conn, packet.Data[:packet.N], offset); err != nil {
 			lastError = time.Now()
-		} else {
-			c.RefreshLastActive()
 		}
 		c.pool.Put(packet)
 	}
@@ -382,18 +362,19 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 			if err := gob.NewEncoder(peerConn).Encode(PeerResponse{Success: true, Hostname: t.hostname}); err != nil {
 				return
 			}
+			t.dnsTable.Update(peerHello.Hostname, peerHello.FromAddr)
+
 			t.mu.Lock()
-			defer t.mu.Unlock()
 			peerCh, exists := t.table[peerHello.FromAddr]
 			if !exists {
 				peerCh = NewConnection(peerHello.FromAddr, t.dialToPeer, t.receiveChan, &t.pool, t.maxQueueSize)
 				t.table[peerHello.FromAddr] = peerCh
-				go peerCh.ChannelLoop(peerConn)
+				t.mu.Unlock()
+				peerCh.ChannelLoop(peerConn)
 			} else {
-				go peerCh.receiveLoop(peerConn)
+				t.mu.Unlock()
+				peerCh.receiveLoop(peerConn)
 			}
-			peerCh.SetHostName(peerHello.Hostname)
-			t.dnsTable.Update(peerHello.Hostname, peerHello.FromAddr)
 		}(peerConn)
 	}
 }
@@ -427,8 +408,6 @@ func (t *PeerTable) backgroundRoutine(done chan struct{}) {
 					t.dnsTable.Erase(conn.addr)
 					conn.Close()
 					delete(t.table, peer)
-				} else {
-					t.dnsTable.Update(conn.peerHostname, conn.addr)
 				}
 			}
 			t.mu.Unlock()
@@ -539,7 +518,7 @@ func (t *PeerTable) ServeFunc(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Connection Table %s\n", t.localNet.String())
 	for _, peerName := range keys {
 		peerConn := t.table[peerName]
-		fmt.Fprintf(w, "\nPeer: %s\nHostname: %s\n", peerName, fmt.Sprintf("%s.%s", peerConn.GetHostName(), t.dnsSuffix))
+		fmt.Fprintf(w, "\nPeer: %s\nHostname: %s\n", peerName, fmt.Sprintf("%s.%s", t.dnsTable.Lookup(peerName), t.dnsSuffix))
 		sessionID, err := t.dialer.GetSessionID(path.Join(t.dialerBaseAddr, peerName))
 		if err == nil {
 			fmt.Fprintf(w, "Session ID: %s\n", sessionID)

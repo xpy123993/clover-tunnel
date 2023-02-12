@@ -23,6 +23,9 @@ func PostTunnelSetup(localNet *netip.Prefix, devName, dnsSuffix string) error {
 	if err := redirectPipeExecute("powershell.exe", "-Command", "Add-DnsClientNrptRule", "-Namespace", "."+dnsSuffix, "-NameServers", localNet.Addr().String(), "-Comment", devName); err != nil {
 		log.Printf("Configure DNS failed.")
 	}
+	if err := redirectPipeExecute("powershell.exe", "-Command", "Set-DnsClient", devName, "-ConnectionSpecificSuffix", dnsSuffix); err != nil {
+		log.Printf("Configure DNS search domain failed.")
+	}
 	return nil
 }
 
