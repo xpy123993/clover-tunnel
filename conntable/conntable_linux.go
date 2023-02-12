@@ -32,6 +32,7 @@ func PostTunnelSetup(localNet *netip.Prefix, devName, dnsSuffix string) error {
 }
 
 func PostTunnelCleanup(devName string, dnsSuffix string) {
-	redirectPipeExecute("ip", "link", "delete", "dev", devName)
-	redirectPipeExecute("ip", "tuntap", "del", "mode", "tun", devName)
+	if err := redirectPipeExecute("ip", "tuntap", "del", "mode", "tun", devName); err == nil {
+		log.Printf("Clean up is completed")
+	}
 }

@@ -10,7 +10,7 @@ import (
 
 type PeerConnection struct {
 	addr        string
-	dialer      func(string) (net.Conn, *PeerResponse, error)
+	dialer      func(string) (net.Conn, error)
 	sendChan    chan *Packet
 	receiveChan chan *Packet
 
@@ -26,7 +26,7 @@ type PeerConnection struct {
 	maxQueueSize int
 }
 
-func NewConnection(addr string, dialer func(string) (net.Conn, *PeerResponse, error), receiveChan chan *Packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
+func NewConnection(addr string, dialer func(string) (net.Conn, error), receiveChan chan *Packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
 	return &PeerConnection{
 		addr:                   addr,
 		dialer:                 dialer,
@@ -126,7 +126,7 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 				if conn != nil {
 					conn.Close()
 				}
-				conn, _, err = c.dialer(c.addr)
+				conn, err = c.dialer(c.addr)
 				if err == nil {
 					go c.receiveLoop(conn)
 				} else {

@@ -1,6 +1,7 @@
 package conntable
 
 import (
+	"context"
 	"encoding/gob"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/pkg/errors"
 	"github.com/xpy123993/corenet"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -46,7 +48,7 @@ type Packet struct {
 type LocalPeerInfo struct {
 	MTU      int
 	Hostname string
-	LocalNet *netip.Prefix
+	LocalNet netip.Prefix
 	Domain   string
 
 	ChannelRoot string
@@ -66,10 +68,15 @@ type PeerTable struct {
 	maxQueueSize int
 	localInfo    *LocalPeerInfo
 
-	dnsTable *stringTable
+	dnsTable  *stringTable
+	dnsServer *dns.Server
+
+	innerContext       context.Context
+	innerContextCancel context.CancelCauseFunc
+	inflightRoutines   sync.WaitGroup
 }
 
-func NewPeerTable(device tun.Device, listener net.Listener, dialer *corenet.Dialer, maxQueueSize int, localInfo *LocalPeerInfo) *PeerTable {
+func NewPeerTable(ctx context.Context, device tun.Device, listener net.Listener, dialer *corenet.Dialer, maxQueueSize int, localInfo *LocalPeerInfo) *PeerTable {
 	table := &PeerTable{
 		isClosed:    false,
 		table:       map[string]*PeerConnection{},
@@ -84,41 +91,47 @@ func NewPeerTable(device tun.Device, listener net.Listener, dialer *corenet.Dial
 		maxQueueSize: maxQueueSize,
 		dnsTable:     newStringTable(),
 	}
+	table.innerContext, table.innerContextCancel = context.WithCancelCause(ctx)
+	table.dnsServer = table.SetupDNSServer()
+	table.inflightRoutines.Add(1)
+	go table.backgroundRoutine()
 	return table
 }
 
-func (t *PeerTable) dialToPeer(s string) (net.Conn, *PeerResponse, error) {
+func (t *PeerTable) dialToPeer(s string) (net.Conn, error) {
+	if t.innerContext.Err() != nil {
+		return nil, fmt.Errorf("PeerTable is closed")
+	}
 	conn, err := t.dialer.Dial(path.Join(t.localInfo.ChannelRoot, s))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := gob.NewEncoder(conn).Encode(PeerHello{FromAddr: t.localInfo.LocalNet.Addr().String(), ToAddr: s, Hostname: t.localInfo.Hostname}); err != nil {
 		conn.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	resp := PeerResponse{}
 	if err := gob.NewDecoder(conn).Decode(&resp); err != nil {
 		conn.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	if !resp.Success {
 		conn.Close()
-		return nil, nil, fmt.Errorf("app error: %s", resp.Reason)
+		return nil, fmt.Errorf("app error: %s", resp.Reason)
 	}
 	conn.SetDeadline(time.Time{})
 	t.dnsTable.Update(resp.Hostname, s)
-	return conn, &resp, nil
+	return conn, nil
 }
 
 func (t *PeerTable) serveReadDeviceLoop() {
-	for {
+	for t.innerContext.Err() == nil {
 		packet := t.pool.Get().(*Packet)
 		n, err := t.device.Read(packet.Data, offset)
 		if err != nil {
-			if !t.IsClosed() {
-				log.Printf("Tunnel read loop closed: %v, exiting", err)
-				t.Close()
+			if t.innerContext.Err() == nil {
+				t.closeWithError(errors.Wrap(err, "while serving device read loop"))
 			}
 			return
 		}
@@ -152,6 +165,9 @@ func (t *PeerTable) serveWriteDeviceLoop() {
 		t.device.Write(buffer.Data[:buffer.N], offset)
 		t.pool.Put(buffer)
 	}
+	if t.innerContext.Err() == nil {
+		t.closeWithError(fmt.Errorf("device receive channel is closed"))
+	}
 }
 
 func (t *PeerTable) IsClosed() bool {
@@ -161,12 +177,11 @@ func (t *PeerTable) IsClosed() bool {
 }
 
 func (t *PeerTable) servePeerIncomingConnnectionLoop() {
-	for {
+	for t.innerContext.Err() == nil {
 		peerConn, err := t.listener.Accept()
 		if err != nil {
-			if !t.IsClosed() {
-				log.Printf("Tunnel channel closed: %v, exiting", err)
-				t.Close()
+			if t.innerContext.Err() == nil {
+				t.closeWithError(errors.Wrap(err, "while serving incoming connection loop"))
 			}
 			return
 		}
@@ -199,7 +214,7 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 	}
 }
 
-func (t *PeerTable) backgroundRoutine(done chan struct{}) {
+func (t *PeerTable) backgroundRoutine() {
 	timer := time.NewTicker(30 * time.Minute)
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -208,14 +223,15 @@ func (t *PeerTable) backgroundRoutine(done chan struct{}) {
 		timer.Stop()
 		signal.Stop(sigs)
 		close(sigs)
+		t.inflightRoutines.Done()
 	}()
 
 	for {
 		select {
 		case <-sigs:
-			t.Close()
+			t.closeWithError(fmt.Errorf("received exit signal"))
 			return
-		case <-done:
+		case <-t.innerContext.Done():
 			return
 		case <-timer.C:
 			t.mu.Lock()
@@ -261,39 +277,32 @@ func (t *PeerTable) SetupDNSServer() *dns.Server {
 	return server
 }
 
-func (t *PeerTable) Serve() {
-	gcDone := make(chan struct{})
-	defer close(gcDone)
-	go t.backgroundRoutine(gcDone)
-
-	tunnelWait := sync.WaitGroup{}
-	tunnelWait.Add(3)
+func (t *PeerTable) Start() {
+	t.inflightRoutines.Add(3)
 	go func() {
 		t.servePeerIncomingConnnectionLoop()
-		tunnelWait.Done()
+		t.inflightRoutines.Done()
 	}()
 	go func() {
 		t.serveReadDeviceLoop()
-		tunnelWait.Done()
+		t.inflightRoutines.Done()
 	}()
 	go func() {
 		t.serveWriteDeviceLoop()
-		tunnelWait.Done()
+		t.inflightRoutines.Done()
 	}()
-	dnsWait := make(chan struct{})
-	dnsQuit := make(chan struct{})
-	var dnsServer *dns.Server
+	t.inflightRoutines.Add(1)
 	go func() {
-		defer close(dnsWait)
+		defer t.inflightRoutines.Done()
 		startTime := time.Now()
 		var err error
 		for time.Since(startTime) < 2*time.Minute {
-			dnsServer = t.SetupDNSServer()
-			err = dnsServer.ListenAndServe()
+			err = t.dnsServer.ListenAndServe()
 			if err != nil {
+				log.Printf("DNS Server setup failed: %v, will retry in 3 seconds", err)
 				select {
 				case <-time.After(3 * time.Second):
-				case <-dnsQuit:
+				case <-t.innerContext.Done():
 					return
 				}
 			} else {
@@ -304,14 +313,21 @@ func (t *PeerTable) Serve() {
 			log.Printf("DNS server cannot set up: %v", err)
 		}
 	}()
-	tunnelWait.Wait()
-	close(dnsQuit)
-	dnsServer.Shutdown()
-	<-dnsWait
-	log.Printf("Tunnel serve loop closed")
 }
 
-func (t *PeerTable) Close() {
+func (t *PeerTable) WaitForShutdown() error {
+	t.inflightRoutines.Wait()
+	return context.Cause(t.innerContext)
+}
+
+func (t *PeerTable) Serve() {
+	t.Start()
+	if err := t.WaitForShutdown(); err != nil {
+		log.Printf("Serve returned: %v", err)
+	}
+}
+
+func (t *PeerTable) closeWithError(err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -320,13 +336,28 @@ func (t *PeerTable) Close() {
 	}
 	t.isClosed = true
 
+	t.innerContextCancel(err)
 	for _, val := range t.table {
 		val.Close()
 	}
-	t.listener.Close()
-	t.device.Close()
-	t.dialer.Close()
+	if t.listener != nil {
+		t.listener.Close()
+	}
+	if t.device != nil {
+		t.device.Close()
+	}
+	if t.dialer != nil {
+		t.dialer.Close()
+	}
+	if t.dnsServer != nil {
+		t.dnsServer.Shutdown()
+	}
 	close(t.receiveChan)
+}
+
+func (t *PeerTable) Shutdown() {
+	t.closeWithError(fmt.Errorf("PeerTable is closed"))
+	t.inflightRoutines.Wait()
 }
 
 func (t *PeerTable) ServeFunc(w http.ResponseWriter, r *http.Request) {

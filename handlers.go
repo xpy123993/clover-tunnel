@@ -137,11 +137,11 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	localInfo := conntable.LocalPeerInfo{
 		MTU:         mtu,
 		Hostname:    hostname,
-		LocalNet:    &localNet,
+		LocalNet:    localNet,
 		Domain:      dnsSuffix,
 		ChannelRoot: toAddr.Path,
 	}
-	connTable := conntable.NewPeerTable(device, listener, clientDialer, 1000, &localInfo)
+	connTable := conntable.NewPeerTable(context.Background(), device, listener, clientDialer, 1000, &localInfo)
 	if len(*debugAddress) > 0 {
 		_, port, err := net.SplitHostPort(*debugAddress)
 		if err == nil {
