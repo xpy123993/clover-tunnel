@@ -247,7 +247,6 @@ type PeerTable struct {
 	hostname       string
 	dnsSuffix      string
 	dnsTable       *stringTable
-	dnsServer      *dns.Server
 }
 
 func NewPeerTable(mtu int, device tun.Device,
@@ -273,7 +272,6 @@ func NewPeerTable(mtu int, device tun.Device,
 		hostname:       hostname,
 		dnsTable:       newStringTable(),
 	}
-	table.dnsServer = table.SetupDNSServer()
 	return table
 }
 
@@ -461,28 +459,52 @@ func (t *PeerTable) SetupDNSServer() *dns.Server {
 }
 
 func (t *PeerTable) Serve() {
-	wg := sync.WaitGroup{}
-	wg.Add(4)
 	gcDone := make(chan struct{})
 	defer close(gcDone)
 	go t.backgroundRoutine(gcDone)
+
+	tunnelWait := sync.WaitGroup{}
+	tunnelWait.Add(3)
 	go func() {
 		t.servePeerIncomingConnnectionLoop()
-		wg.Done()
+		tunnelWait.Done()
 	}()
 	go func() {
 		t.serveReadDeviceLoop()
-		wg.Done()
+		tunnelWait.Done()
 	}()
 	go func() {
 		t.serveWriteDeviceLoop()
-		wg.Done()
+		tunnelWait.Done()
 	}()
+	dnsWait := make(chan struct{})
+	dnsQuit := make(chan struct{})
+	var dnsServer *dns.Server
 	go func() {
-		t.dnsServer.ListenAndServe()
-		wg.Done()
+		defer close(dnsWait)
+		startTime := time.Now()
+		var err error
+		for time.Since(startTime) < 2*time.Minute {
+			dnsServer = t.SetupDNSServer()
+			err = dnsServer.ListenAndServe()
+			if err != nil {
+				select {
+				case <-time.After(3 * time.Second):
+				case <-dnsQuit:
+					return
+				}
+			} else {
+				break
+			}
+		}
+		if err != nil {
+			log.Printf("DNS server cannot set up: %v", err)
+		}
 	}()
-	wg.Wait()
+	tunnelWait.Wait()
+	close(dnsQuit)
+	dnsServer.Shutdown()
+	<-dnsWait
 	log.Printf("Tunnel serve loop closed")
 }
 
@@ -500,7 +522,7 @@ func (t *PeerTable) Close() {
 	}
 	t.listener.Close()
 	t.device.Close()
-	t.dnsServer.Shutdown()
+	t.dialer.Close()
 	close(t.receiveChan)
 }
 

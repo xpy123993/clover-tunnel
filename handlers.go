@@ -147,5 +147,5 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		log.Printf("Cannot configure interface: %v", err)
 	}
 	connTable.Serve()
-	PostTunnelCleanup(devName)
+	PostTunnelCleanup(devName, dnsSuffix)
 }

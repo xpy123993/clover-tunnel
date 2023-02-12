@@ -31,7 +31,7 @@ func PostTunnelSetup(localNet *netip.Prefix, devName, dnsSuffix string) error {
 	return nil
 }
 
-func PostTunnelCleanup(devName string) {
+func PostTunnelCleanup(devName string, dnsSuffix string) {
 	redirectPipeExecute("ip", "link", "delete", "dev", devName)
 	redirectPipeExecute("ip", "tuntap", "del", "mode", "tun", devName)
 }

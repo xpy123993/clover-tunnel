@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/netip"
 	"os"
@@ -16,12 +17,15 @@ func redirectPipeExecute(name string, args ...string) error {
 }
 
 func PostTunnelSetup(localNet *netip.Prefix, devName, dnsSuffix string) error {
-	if err := redirectPipeExecute("netsh", "interface", "ipv4", "set", "address", "name="+devName, "source=static", "addr="+localNet.String(), "gateway=none"); err != nil {
+	if err := redirectPipeExecute("netsh", "interface", "ip", "set", "address", "name="+devName, "source=static", "addr="+localNet.String(), "gateway=none"); err != nil {
 		log.Printf("Configure tunnel failed.")
 	}
-	log.Printf("Warning: DNS server is up on %s but dns split is not supported", localNet.Addr().String())
+	if err := redirectPipeExecute("powershell.exe", "-Command", "Add-DnsClientNrptRule", "-Namespace", "."+dnsSuffix, "-NameServers", localNet.Addr().String(), "-Comment", devName); err != nil {
+		log.Printf("Configure DNS failed.")
+	}
 	return nil
 }
 
-func PostTunnelCleanup(devName string) {
+func PostTunnelCleanup(devName string, dnsSuffix string) {
+	redirectPipeExecute("powershell.exe", "-Command", fmt.Sprintf("& { Get-DnsClientNrptRule | where Comment -eq '%s' | foreach { Remove-DnsClientNrptRule -Name $_.Name -Force } }", devName))
 }
