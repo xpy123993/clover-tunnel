@@ -25,21 +25,21 @@ import (
 
 const offset = 4
 
-type PeerHello struct {
+type peerHello struct {
 	FromAddr string
 	ToAddr   string
 
 	Hostname string
 }
 
-type PeerResponse struct {
+type peerResponse struct {
 	Success bool
 	Reason  string
 
 	Hostname string
 }
 
-type Packet struct {
+type packet struct {
 	Data     []byte
 	N        int
 	Capacity int
@@ -61,7 +61,7 @@ type PeerTable struct {
 
 	device      tun.Device
 	listener    net.Listener
-	receiveChan chan *Packet
+	receiveChan chan *packet
 	pool        sync.Pool
 
 	dialer       *corenet.Dialer
@@ -82,9 +82,9 @@ func NewPeerTable(ctx context.Context, device tun.Device, listener net.Listener,
 		table:       map[string]*PeerConnection{},
 		device:      device,
 		listener:    listener,
-		receiveChan: make(chan *Packet, maxQueueSize),
+		receiveChan: make(chan *packet, maxQueueSize),
 		pool: sync.Pool{New: func() any {
-			return &Packet{Data: make([]byte, localInfo.MTU+offset), N: 0, Capacity: localInfo.MTU + offset}
+			return &packet{Data: make([]byte, localInfo.MTU+offset), N: 0, Capacity: localInfo.MTU + offset}
 		}},
 		localInfo:    localInfo,
 		dialer:       dialer,
@@ -92,7 +92,7 @@ func NewPeerTable(ctx context.Context, device tun.Device, listener net.Listener,
 		dnsTable:     newStringTable(),
 	}
 	table.innerContext, table.innerContextCancel = context.WithCancelCause(ctx)
-	table.dnsServer = table.SetupDNSServer()
+	table.dnsServer = table.createDNSServer()
 	table.inflightRoutines.Add(1)
 	go table.backgroundRoutine()
 	return table
@@ -107,11 +107,11 @@ func (t *PeerTable) dialToPeer(s string) (net.Conn, error) {
 		return nil, err
 	}
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := gob.NewEncoder(conn).Encode(PeerHello{FromAddr: t.localInfo.LocalNet.Addr().String(), ToAddr: s, Hostname: t.localInfo.Hostname}); err != nil {
+	if err := gob.NewEncoder(conn).Encode(peerHello{FromAddr: t.localInfo.LocalNet.Addr().String(), ToAddr: s, Hostname: t.localInfo.Hostname}); err != nil {
 		conn.Close()
 		return nil, err
 	}
-	resp := PeerResponse{}
+	resp := peerResponse{}
 	if err := gob.NewDecoder(conn).Decode(&resp); err != nil {
 		conn.Close()
 		return nil, err
@@ -127,7 +127,7 @@ func (t *PeerTable) dialToPeer(s string) (net.Conn, error) {
 
 func (t *PeerTable) serveReadDeviceLoop() {
 	for t.innerContext.Err() == nil {
-		packet := t.pool.Get().(*Packet)
+		packet := t.pool.Get().(*packet)
 		n, err := t.device.Read(packet.Data, offset)
 		if err != nil {
 			if t.innerContext.Err() == nil {
@@ -165,9 +165,6 @@ func (t *PeerTable) serveWriteDeviceLoop() {
 		t.device.Write(buffer.Data[:buffer.N], offset)
 		t.pool.Put(buffer)
 	}
-	if t.innerContext.Err() == nil {
-		t.closeWithError(fmt.Errorf("device receive channel is closed"))
-	}
 }
 
 func (t *PeerTable) IsClosed() bool {
@@ -186,15 +183,15 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 			return
 		}
 		go func(peerConn net.Conn) {
-			peerHello := PeerHello{}
+			peerHello := peerHello{}
 			if err := gob.NewDecoder(peerConn).Decode(&peerHello); err != nil {
 				return
 			}
 			if peerHello.ToAddr != t.localInfo.LocalNet.Addr().String() {
-				gob.NewEncoder(peerConn).Encode(PeerResponse{Success: false, Reason: fmt.Sprintf("expect local addr: %s, got %s", t.localInfo.LocalNet.Addr().String(), peerHello.ToAddr)})
+				gob.NewEncoder(peerConn).Encode(peerResponse{Success: false, Reason: fmt.Sprintf("expect local addr: %s, got %s", t.localInfo.LocalNet.Addr().String(), peerHello.ToAddr)})
 				return
 			}
-			if err := gob.NewEncoder(peerConn).Encode(PeerResponse{Success: true, Hostname: t.localInfo.Hostname}); err != nil {
+			if err := gob.NewEncoder(peerConn).Encode(peerResponse{Success: true, Hostname: t.localInfo.Hostname}); err != nil {
 				return
 			}
 			t.dnsTable.Update(peerHello.Hostname, peerHello.FromAddr)
@@ -214,6 +211,21 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 	}
 }
 
+func (t *PeerTable) cleanupObsoleteConnections() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.isClosed {
+		return
+	}
+	for peer, conn := range t.table {
+		if time.Since(conn.LastActive()) > 30*time.Minute {
+			t.dnsTable.Erase(conn.addr)
+			conn.Close()
+			delete(t.table, peer)
+		}
+	}
+}
+
 func (t *PeerTable) backgroundRoutine() {
 	timer := time.NewTicker(30 * time.Minute)
 	sigs := make(chan os.Signal, 1)
@@ -226,6 +238,7 @@ func (t *PeerTable) backgroundRoutine() {
 		t.inflightRoutines.Done()
 	}()
 
+	t.cleanupObsoleteConnections()
 	for {
 		select {
 		case <-sigs:
@@ -234,24 +247,12 @@ func (t *PeerTable) backgroundRoutine() {
 		case <-t.innerContext.Done():
 			return
 		case <-timer.C:
-			t.mu.Lock()
-			if t.isClosed {
-				t.mu.Unlock()
-				return
-			}
-			for peer, conn := range t.table {
-				if time.Since(conn.LastActive()) > 30*time.Minute {
-					t.dnsTable.Erase(conn.addr)
-					conn.Close()
-					delete(t.table, peer)
-				}
-			}
-			t.mu.Unlock()
+			t.cleanupObsoleteConnections()
 		}
 	}
 }
 
-func (t *PeerTable) SetupDNSServer() *dns.Server {
+func (t *PeerTable) createDNSServer() *dns.Server {
 	server := &dns.Server{Addr: t.localInfo.LocalNet.Addr().String() + ":53", Net: "udp"}
 	server.Handler = dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
 		msg := dns.Msg{}

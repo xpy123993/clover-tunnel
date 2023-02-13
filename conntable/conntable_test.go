@@ -3,9 +3,14 @@ package conntable_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,6 +82,26 @@ func createCorenetListener(t *testing.T) (net.Listener, string) {
 	return corenet.NewMultiListener(corenet.WithListener(lis, []string{localAddr})), localAddr
 }
 
+func httpResonseContainsString(t *testing.T, table *conntable.PeerTable, keywords []string) {
+	recorder := httptest.NewRecorder()
+	table.ServeFunc(recorder, nil)
+
+	if recorder.Result().StatusCode != http.StatusOK {
+		t.Errorf("expect %s to be OK status", http.StatusText(recorder.Result().StatusCode))
+	}
+	data, _ := io.ReadAll(recorder.Result().Body)
+	failed := false
+	for _, keyword := range keywords {
+		if !strings.Contains(string(data), keyword) {
+			t.Errorf("expect to contain keyword `%s`", keyword)
+			failed = true
+		}
+	}
+	if failed {
+		t.Errorf("response body: %s", string(data))
+	}
+}
+
 func TestServeSuccessOnePeerPacket(t *testing.T) {
 	peerALis, peerADirectAddr := createCorenetListener(t)
 	peerBLis, peerBDirectAddr := createCorenetListener(t)
@@ -88,18 +113,32 @@ func TestServeSuccessOnePeerPacket(t *testing.T) {
 			"/test/192.168.100.2": {peerBDirectAddr},
 		}))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	peerSetup := func(device *TestDevice, listener net.Listener, localInfo *conntable.LocalPeerInfo) {
-		peerTable := conntable.NewPeerTable(ctx, device, listener, dialer, 100, localInfo)
-		peerTable.Serve()
+	sigReceivedPacket := make(chan struct{})
+	completedPeers := sync.WaitGroup{}
+
+	peerSetup := func(device *TestDevice, listener net.Listener, localInfo *conntable.LocalPeerInfo, postVerifyName, postVerifyAddr string) {
+		defer completedPeers.Done()
+		peerTable := conntable.NewPeerTable(context.Background(), device, listener, dialer, 100, localInfo)
+		peerTable.Start()
+		<-sigReceivedPacket
+
+		httpResonseContainsString(t, peerTable, []string{fmt.Sprintf("Hostname: %s", postVerifyName), fmt.Sprintf("Peer: %s", postVerifyAddr)})
+
+		peerTable.Shutdown()
+		log.Printf("Peer returned: %v", peerTable.WaitForShutdown())
 		if !peerTable.IsClosed() {
 			t.Error("expect peer table to be returned as closed state")
 		}
 	}
+	completedPeers.Add(2)
 	peerACloser := make(chan struct{})
 	go peerSetup(&TestDevice{
 		readFn: func(b []byte, i int) (int, error) {
-			time.Sleep(10 * time.Millisecond)
+			select {
+			case <-time.After(20 * time.Millisecond):
+			case <-peerACloser:
+				return 0, fmt.Errorf("closed")
+			}
 			b[i] = 4 << 4
 			copy(b[i+16:i+20], net.IP{192, 168, 100, 2})
 			copy(b[i+20:], "hello world")
@@ -112,10 +151,11 @@ func TestServeSuccessOnePeerPacket(t *testing.T) {
 		LocalNet:    netip.MustParsePrefix("192.168.100.1/24"),
 		Domain:      "test",
 		ChannelRoot: "/test",
-	})
+	}, "PeerB.test", "192.168.100.2")
 	received := atomic.Bool{}
 	received.Store(false)
 	peerBCloser := make(chan struct{})
+
 	go peerSetup(&TestDevice{
 		readFn: func(b []byte, i int) (int, error) {
 			<-peerBCloser
@@ -125,8 +165,9 @@ func TestServeSuccessOnePeerPacket(t *testing.T) {
 			if string(b[i+20:i+20+len("hello world")]) != "hello world" {
 				t.Errorf("invalid packet received: expect hello world, got %s", string(b[i+20:]))
 			}
-			received.Store(true)
-			cancel()
+			if received.CompareAndSwap(false, true) {
+				close(sigReceivedPacket)
+			}
 			return len(b) - i, nil
 		},
 		close: func() error { close(peerBCloser); return nil },
@@ -136,9 +177,43 @@ func TestServeSuccessOnePeerPacket(t *testing.T) {
 		LocalNet:    netip.MustParsePrefix("192.168.100.2/24"),
 		Domain:      "test",
 		ChannelRoot: "/test",
-	})
-	<-ctx.Done()
+	}, "PeerA.test", "192.168.100.1")
+	<-sigReceivedPacket
 	if !received.Load() {
 		t.Errorf("PeerB cannot receive hello world packet")
 	}
+	completedPeers.Wait()
+}
+
+func TestStatusPage200(t *testing.T) {
+	peerALis, peerADirectAddr := createCorenetListener(t)
+	dialer := corenet.NewDialer([]string{},
+		corenet.WithDialerUpdateChannelAddress(false),
+		corenet.WithDialerChannelInitialAddress(map[string][]string{
+			"/test/192.168.100.1": {peerADirectAddr},
+		}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	peerSetup := func(device *TestDevice, listener net.Listener, localInfo *conntable.LocalPeerInfo) {
+		peerTable := conntable.NewPeerTable(ctx, device, listener, dialer, 100, localInfo)
+		peerTable.Start()
+		httpResonseContainsString(t, peerTable, []string{"192.168.100.1/24"})
+		cancel()
+		peerTable.WaitForShutdown()
+	}
+	peerACloser := make(chan struct{})
+	go peerSetup(&TestDevice{
+		readFn: func(b []byte, i int) (int, error) {
+			<-peerACloser
+			return 0, fmt.Errorf("closed")
+		},
+		close: func() error { close(peerACloser); return nil },
+	}, peerALis, &conntable.LocalPeerInfo{
+		MTU:         1500,
+		Hostname:    "PeerA",
+		LocalNet:    netip.MustParsePrefix("192.168.100.1/24"),
+		Domain:      "test",
+		ChannelRoot: "/test",
+	})
+	<-ctx.Done()
 }

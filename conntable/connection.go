@@ -11,8 +11,8 @@ import (
 type PeerConnection struct {
 	addr        string
 	dialer      func(string) (net.Conn, error)
-	sendChan    chan *Packet
-	receiveChan chan *Packet
+	sendChan    chan *packet
+	receiveChan chan *packet
 
 	mu                     sync.RWMutex
 	lastActive             time.Time
@@ -26,11 +26,11 @@ type PeerConnection struct {
 	maxQueueSize int
 }
 
-func NewConnection(addr string, dialer func(string) (net.Conn, error), receiveChan chan *Packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
+func NewConnection(addr string, dialer func(string) (net.Conn, error), receiveChan chan *packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
 	return &PeerConnection{
 		addr:                   addr,
 		dialer:                 dialer,
-		sendChan:               make(chan *Packet, maxQueueSize),
+		sendChan:               make(chan *packet, maxQueueSize),
 		receiveChan:            receiveChan,
 		lastActive:             time.Now(),
 		isClosed:               false,
@@ -67,7 +67,7 @@ func (c *PeerConnection) Close() {
 	c.isClosed = true
 }
 
-func (c *PeerConnection) Send(p *Packet) {
+func (c *PeerConnection) Send(p *packet) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.isClosed {
@@ -88,7 +88,7 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	for {
-		packet := c.pool.Get().(*Packet)
+		packet := c.pool.Get().(*packet)
 		packet.N = 0
 		n, err := readBuffer(reader, packet.Data[offset:])
 		if err != nil {
