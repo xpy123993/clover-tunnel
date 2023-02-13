@@ -25,7 +25,7 @@ func serve() {
 
 	args := flag.Args()
 	if len(args) != 2 {
-		log.Fatalf("Invalid args, usage: clover-tunnel [from addr] [to addr]")
+		log.Fatalf("Invalid args, usage: yukicat [from addr] [to addr]")
 	}
 
 	switch args[0] {

@@ -26,10 +26,10 @@ else
     echo Skiping $CERT_FOLDER/cert.key
 fi
 
-for ARCH in arm arm64 amd64; do
-    OUTPUT_FULLNAME=$OUTPUT_FOLDER/clover3-tunnel.${ARCH}
+for ARCH in arm64 amd64; do
+    OUTPUT_FULLNAME=$OUTPUT_FOLDER/yukicat.${ARCH}
     CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH go build -ldflags "-s -w" -o $OUTPUT_FULLNAME $SRC_FOLDER
     upx $OUTPUT_FULLNAME
 done
 
-GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o $OUTPUT_FOLDER/clover3-tunnel.exe $SRC_FOLDER
+GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o $OUTPUT_FOLDER/yukicat.exe $SRC_FOLDER
