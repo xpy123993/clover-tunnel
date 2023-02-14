@@ -6,7 +6,7 @@ require (
 	github.com/miekg/dns v1.1.50
 	github.com/pkg/errors v0.9.1
 	github.com/quic-go/quic-go v0.32.0
-	github.com/xpy123993/corenet v0.0.59
+	github.com/xpy123993/corenet v0.0.60
 	golang.zx2c4.com/wireguard v0.0.0-20220920152132-bb719d3a6e2c
 )
 
