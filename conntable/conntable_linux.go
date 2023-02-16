@@ -22,12 +22,6 @@ func PostTunnelSetup(localNet *netip.Prefix, devName, dnsSuffix string) error {
 	if err := redirectPipeExecute("ip", "addr", "add", localNet.String(), "dev", devName); err != nil {
 		log.Printf("Configure tunnel failed: cannot configure IP address")
 	}
-	if err := redirectPipeExecute("resolvectl", "dns", devName, localNet.Addr().String()); err != nil {
-		log.Printf("Configure tunnel failed: cannot configure interface DNS")
-	}
-	if err := redirectPipeExecute("resolvectl", "domain", devName, dnsSuffix); err != nil {
-		log.Printf("Configure tunnel failed: cannot configure interface DNS domain")
-	}
 	return nil
 }
 

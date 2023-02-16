@@ -3,7 +3,6 @@ module github.com/xpy123993/yukicat
 go 1.20
 
 require (
-	github.com/miekg/dns v1.1.50
 	github.com/pkg/errors v0.9.1
 	github.com/quic-go/quic-go v0.32.0
 	github.com/xpy123993/corenet v0.0.60

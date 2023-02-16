@@ -12,12 +12,10 @@ import (
 	"os/signal"
 	"path"
 	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/pkg/errors"
 	"github.com/xpy123993/corenet"
 	"golang.zx2c4.com/wireguard/tun"
@@ -68,8 +66,7 @@ type PeerTable struct {
 	maxQueueSize int
 	localInfo    *LocalPeerInfo
 
-	dnsTable  *stringTable
-	dnsServer *dns.Server
+	dnsTable *stringTable
 
 	innerContext       context.Context
 	innerContextCancel context.CancelCauseFunc
@@ -92,7 +89,6 @@ func NewPeerTable(ctx context.Context, device tun.Device, listener net.Listener,
 		dnsTable:     newStringTable(),
 	}
 	table.innerContext, table.innerContextCancel = context.WithCancelCause(ctx)
-	table.dnsServer = table.createDNSServer()
 	table.inflightRoutines.Add(1)
 	go table.backgroundRoutine()
 	return table
@@ -252,32 +248,6 @@ func (t *PeerTable) backgroundRoutine() {
 	}
 }
 
-func (t *PeerTable) createDNSServer() *dns.Server {
-	server := &dns.Server{Addr: t.localInfo.LocalNet.Addr().String() + ":53", Net: "udp"}
-	server.Handler = dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
-		msg := dns.Msg{}
-		msg.SetReply(r)
-		switch r.Question[0].Qtype {
-		case dns.TypeA:
-			msg.Authoritative = true
-			domain := msg.Question[0].Name
-			fullSuffix := "." + t.localInfo.Domain + "."
-			if !strings.HasSuffix(domain, fullSuffix) {
-				break
-			}
-			address := t.dnsTable.Lookup(strings.TrimSuffix(domain, fullSuffix))
-			if len(address) > 0 {
-				msg.Answer = append(msg.Answer, &dns.A{
-					Hdr: dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
-					A:   net.ParseIP(address),
-				})
-			}
-		}
-		w.WriteMsg(&msg)
-	})
-	return server
-}
-
 func (t *PeerTable) Start() {
 	t.inflightRoutines.Add(3)
 	go func() {
@@ -291,28 +261,6 @@ func (t *PeerTable) Start() {
 	go func() {
 		t.serveWriteDeviceLoop()
 		t.inflightRoutines.Done()
-	}()
-	t.inflightRoutines.Add(1)
-	go func() {
-		defer t.inflightRoutines.Done()
-		startTime := time.Now()
-		var err error
-		for time.Since(startTime) < 2*time.Minute {
-			err = t.dnsServer.ListenAndServe()
-			if err != nil {
-				log.Printf("DNS Server setup failed: %v, will retry in 3 seconds", err)
-				select {
-				case <-time.After(3 * time.Second):
-				case <-t.innerContext.Done():
-					return
-				}
-			} else {
-				break
-			}
-		}
-		if err != nil {
-			log.Printf("DNS server cannot set up: %v", err)
-		}
 	}()
 }
 
@@ -349,9 +297,6 @@ func (t *PeerTable) closeWithError(err error) {
 	}
 	if t.dialer != nil {
 		t.dialer.Close()
-	}
-	if t.dnsServer != nil {
-		t.dnsServer.Shutdown()
 	}
 	close(t.receiveChan)
 }
