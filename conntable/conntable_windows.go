@@ -15,12 +15,12 @@ func redirectPipeExecute(name string, args ...string) error {
 	return cmd.Run()
 }
 
-func PostTunnelSetup(localNet *netip.Prefix, devName, dnsSuffix string) error {
+func PostTunnelSetup(localNet *netip.Prefix, devName string) error {
 	if err := redirectPipeExecute("netsh", "interface", "ip", "set", "address", "name="+devName, "source=static", "addr="+localNet.String(), "gateway=none"); err != nil {
 		log.Printf("Configure tunnel failed.")
 	}
 	return nil
 }
 
-func PostTunnelCleanup(devName string, dnsSuffix string) {
+func PostTunnelCleanup(devName string) {
 }

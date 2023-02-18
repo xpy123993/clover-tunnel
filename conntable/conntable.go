@@ -47,7 +47,6 @@ type LocalPeerInfo struct {
 	MTU      int
 	Hostname string
 	LocalNet netip.Prefix
-	Domain   string
 
 	ChannelRoot string
 }
@@ -319,7 +318,7 @@ func (t *PeerTable) ServeFunc(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Connection Table %s\n", t.localInfo.LocalNet.String())
 	for _, peerName := range keys {
 		peerConn := t.table[peerName]
-		fmt.Fprintf(w, "\nPeer: %s\nHostname: %s\n", peerName, fmt.Sprintf("%s.%s", t.dnsTable.ReverseLookup(peerName), t.localInfo.Domain))
+		fmt.Fprintf(w, "\nPeer: %s\nHostname: %s\n", peerName, t.dnsTable.ReverseLookup(peerName))
 		sessionID, err := t.dialer.GetSessionID(path.Join(t.localInfo.ChannelRoot, peerName))
 		if err == nil {
 			fmt.Fprintf(w, "Session ID: %s\n", sessionID)

@@ -72,7 +72,6 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	mtu := 1380
 	devName := fromAddr.Query().Get("dev")
 	hostname := fromAddr.Query().Get("hostname")
-	dnsSuffix := fromAddr.Query().Get("dnssuffix")
 	if maskStr := fromAddr.Query().Get("mask"); len(maskStr) > 0 {
 		mask64, err := strconv.ParseInt(maskStr, 10, 32)
 		if err != nil {
@@ -96,9 +95,6 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		if err != nil {
 			hostname = "unknown"
 		}
-	}
-	if len(dnsSuffix) == 0 {
-		dnsSuffix = "yukicat"
 	}
 	listenAddr := *toAddr
 	listenAddr.Path = path.Join(toAddr.Path, fromAddr.Host)
@@ -138,7 +134,6 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		MTU:         mtu,
 		Hostname:    hostname,
 		LocalNet:    localNet,
-		Domain:      dnsSuffix,
 		ChannelRoot: toAddr.Path,
 	}
 	connTable := conntable.NewPeerTable(context.Background(), device, listener, clientDialer, 1000, &localInfo)
@@ -150,9 +145,9 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		}
 	}
 
-	if err := conntable.PostTunnelSetup(&localNet, devName, dnsSuffix); err != nil {
+	if err := conntable.PostTunnelSetup(&localNet, devName); err != nil {
 		log.Printf("Cannot configure interface: %v", err)
 	}
 	connTable.Serve()
-	conntable.PostTunnelCleanup(devName, dnsSuffix)
+	conntable.PostTunnelCleanup(devName)
 }

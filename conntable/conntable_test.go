@@ -149,9 +149,8 @@ func TestServeSuccessOnePeerPacket(t *testing.T) {
 		MTU:         1500,
 		Hostname:    "PeerA",
 		LocalNet:    netip.MustParsePrefix("192.168.100.1/24"),
-		Domain:      "test",
 		ChannelRoot: "/test",
-	}, "PeerB.test", "192.168.100.2")
+	}, "PeerB", "192.168.100.2")
 	received := atomic.Bool{}
 	received.Store(false)
 	peerBCloser := make(chan struct{})
@@ -175,9 +174,8 @@ func TestServeSuccessOnePeerPacket(t *testing.T) {
 		MTU:         1500,
 		Hostname:    "PeerB",
 		LocalNet:    netip.MustParsePrefix("192.168.100.2/24"),
-		Domain:      "test",
 		ChannelRoot: "/test",
-	}, "PeerA.test", "192.168.100.1")
+	}, "PeerA", "192.168.100.1")
 	<-sigReceivedPacket
 	if !received.Load() {
 		t.Errorf("PeerB cannot receive hello world packet")
@@ -212,7 +210,6 @@ func TestStatusPage200(t *testing.T) {
 		MTU:         1500,
 		Hostname:    "PeerA",
 		LocalNet:    netip.MustParsePrefix("192.168.100.1/24"),
-		Domain:      "test",
 		ChannelRoot: "/test",
 	})
 	<-ctx.Done()
