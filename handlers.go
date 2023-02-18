@@ -69,7 +69,7 @@ func serverAsPipe(fromAddr, toAddr *url.URL) {
 
 func serverAsTun(fromAddr, toAddr *url.URL) {
 	mask := 24
-	mtu := 1380
+	mtu := 1500
 	devName := fromAddr.Query().Get("dev")
 	hostname := fromAddr.Query().Get("hostname")
 	if maskStr := fromAddr.Query().Get("mask"); len(maskStr) > 0 {
