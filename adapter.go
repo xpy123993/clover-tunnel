@@ -4,16 +4,18 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/pion/udp/v2"
 	"github.com/xpy123993/corenet"
 )
 
 func createDialer(dialerURL *url.URL) (func() (net.Conn, error), func() error, error) {
 	switch dialerURL.Scheme {
-	case "tcp":
+	case "tcp", "udp":
 		return func() (net.Conn, error) {
-			return net.Dial("tcp", dialerURL.Host)
+			return net.Dial(dialerURL.Scheme, dialerURL.Host)
 		}, nil, nil
 	default:
 		dialer := corenet.NewDialer([]string{dialerURL.String()}, corenet.WithDialerRelayTLSConfig(tunnelTLSConfig))
@@ -34,15 +36,40 @@ func createCorenetListener(listenerURL *url.URL) (net.Listener, error) {
 	}
 	adapters := []corenet.ListenerAdapter{}
 	if port := listenerURL.Query().Get("port"); len(port) > 0 {
-		iPort, err := strconv.ParseInt(port, 10, 32)
+		portSplit := strings.SplitN(port, "/", 2)
+		if len(portSplit) == 1 {
+			portSplit = append(portSplit, "tcp")
+		}
+		iPort, err := strconv.ParseInt(portSplit[0], 10, 32)
 		if err != nil {
 			return nil, err
 		}
-		localAdapter, err := corenet.CreateListenerTCPPortAdapter(int(iPort))
-		if err != nil {
-			return nil, err
+		switch portSplit[1] {
+		case "udp":
+			localAdapter, err := corenet.CreateListenerUDPPortAdapter(int(iPort))
+			if err != nil {
+				return nil, err
+			}
+			adapters = append(adapters, localAdapter)
+		case "tcp":
+			localAdapter, err := corenet.CreateListenerTCPPortAdapter(int(iPort))
+			if err != nil {
+				return nil, err
+			}
+			adapters = append(adapters, localAdapter)
+		case "udp+tcp":
+			localAdapter, err := corenet.CreateListenerUDPPortAdapter(int(iPort))
+			if err != nil {
+				return nil, err
+			}
+			adapters = append(adapters, localAdapter)
+			localAdapter, err = corenet.CreateListenerTCPPortAdapter(int(iPort))
+			if err != nil {
+				return nil, err
+			}
+			adapters = append(adapters, localAdapter)
 		}
-		adapters = append(adapters, localAdapter)
+
 	}
 	adapters = append(adapters, adapter)
 	return corenet.NewMultiListener(adapters...), nil
@@ -52,6 +79,12 @@ func createListener(listenerURL *url.URL) (net.Listener, error) {
 	switch listenerURL.Scheme {
 	case "tcp":
 		return net.Listen("tcp", listenerURL.Host)
+	case "udp":
+		udpAddr, err := net.ResolveUDPAddr("udp", listenerURL.Host)
+		if err != nil {
+			return nil, err
+		}
+		return udp.Listen("udp", udpAddr)
 	default:
 		return createCorenetListener(listenerURL)
 	}
