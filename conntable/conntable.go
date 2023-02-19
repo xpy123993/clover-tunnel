@@ -151,6 +151,8 @@ func (t *PeerTable) serveReadDeviceLoop() {
 			}
 			t.mu.Unlock()
 			peerConn.Send(packet)
+		} else {
+			t.pool.Put(packet)
 		}
 	}
 }

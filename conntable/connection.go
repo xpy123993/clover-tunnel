@@ -133,6 +133,7 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 					lastError = time.Now()
 				}
 			}
+			c.pool.Put(packet)
 			continue
 		}
 		if _, err = writeBuffer(conn, packet.Data[:packet.N], offset); err != nil {
