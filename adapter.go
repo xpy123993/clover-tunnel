@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"net/url"
 	"strconv"
@@ -16,13 +15,12 @@ func createDialer(dialerURL *url.URL) (func() (net.Conn, error), func() error, e
 		return func() (net.Conn, error) {
 			return net.Dial("tcp", dialerURL.Host)
 		}, nil, nil
-	case "ttf", "ktf", "quicf":
+	default:
 		dialer := corenet.NewDialer([]string{dialerURL.String()}, corenet.WithDialerRelayTLSConfig(tunnelTLSConfig))
 		return func() (net.Conn, error) {
 			return dialer.Dial(dialerURL.Path)
 		}, dialer.Close, nil
 	}
-	return nil, nil, fmt.Errorf("URL scheme is not supported")
 }
 
 func createCorenetListener(listenerURL *url.URL) (net.Listener, error) {
@@ -54,8 +52,7 @@ func createListener(listenerURL *url.URL) (net.Listener, error) {
 	switch listenerURL.Scheme {
 	case "tcp":
 		return net.Listen("tcp", listenerURL.Host)
-	case "ktf", "ttf", "quicf":
+	default:
 		return createCorenetListener(listenerURL)
 	}
-	return nil, fmt.Errorf("URL scheme is not supported")
 }
