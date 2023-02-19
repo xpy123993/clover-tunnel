@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/xpy123993/corenet"
 )
 
 var (
@@ -31,6 +33,22 @@ func serve() {
 	switch args[0] {
 	case "relay":
 		serveAsRelayServer(args[1])
+		return
+	case "ls":
+		log.SetFlags(0)
+		dialer := corenet.NewDialer([]string{args[1]}, corenet.WithDialerRelayTLSConfig(tunnelTLSConfig))
+		channelInfos, err := dialer.GetChannelInfosFromRelay()
+		if err != nil {
+			log.Printf("Failed to fetch channel infos: %v", err)
+		}
+		for _, record := range channelInfos {
+			log.Printf("  %s\n", record.Channel)
+			for _, addr := range record.Addresses {
+				log.Printf("    -> %s\n", addr)
+			}
+			log.Println()
+		}
+		log.Printf("%d channel(s) in total\n", len(channelInfos))
 		return
 	}
 	fromURL, err := url.Parse(args[0])
