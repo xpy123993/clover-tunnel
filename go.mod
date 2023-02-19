@@ -3,6 +3,7 @@ module github.com/xpy123993/yukicat
 go 1.20
 
 require (
+	github.com/pion/udp/v2 v2.0.1
 	github.com/pkg/errors v0.9.1
 	github.com/quic-go/quic-go v0.32.0
 	github.com/xpy123993/corenet v0.0.68
@@ -19,7 +20,6 @@ require (
 	github.com/pion/dtls/v2 v2.2.6 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/transport/v2 v2.0.2 // indirect
-	github.com/pion/udp/v2 v2.0.1 // indirect
 	github.com/quic-go/qtls-go1-18 v0.2.0 // indirect
 	github.com/quic-go/qtls-go1-19 v0.2.0 // indirect
 	github.com/quic-go/qtls-go1-20 v0.1.0 // indirect
