@@ -137,7 +137,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		ChannelRoot:       toAddr.Path,
 		EnableCompression: fromAddr.Query().Get("comp") == "1",
 	}
-	connTable := conntable.NewPeerTable(context.Background(), device, listener, clientDialer, 1000, &localInfo)
+	connTable := conntable.NewPeerTable(context.Background(), device, listener, clientDialer, 4096, &localInfo)
 	if len(*debugAddress) > 0 {
 		_, port, err := net.SplitHostPort(*debugAddress)
 		if err == nil {

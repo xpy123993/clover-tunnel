@@ -320,7 +320,7 @@ func (t *PeerTable) ServeFunc(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(keys)
 
-	fmt.Fprintf(w, "Connection Table %s\n", t.localInfo.LocalNet.String())
+	fmt.Fprintf(w, "Connection Table %s\n (Recv Queue: %d)", t.localInfo.LocalNet.String(), len(t.receiveChan))
 	for _, peerName := range keys {
 		peerConn := t.table[peerName]
 		fmt.Fprintf(w, "\nPeer: %s\nHostname: %s\n", peerName, t.dnsTable.ReverseLookup(peerName))
