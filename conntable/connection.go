@@ -86,7 +86,7 @@ func (c *PeerConnection) Send(p *packet) {
 
 func (c *PeerConnection) receiveLoop(conn net.Conn) {
 	defer conn.Close()
-	reader := bufio.NewReader(conn)
+	reader := bufio.NewReaderSize(conn, 16<<10)
 	for {
 		packet := c.pool.Get().(*packet)
 		packet.N = 0
@@ -112,34 +112,71 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 	}
 }
 
+func batcher(packetChan chan *packet) ([]*packet, bool) {
+	packets := make([]*packet, 1)
+	var ok bool
+	packets[0], ok = <-packetChan
+	if !ok {
+		return nil, ok
+	}
+	for {
+		select {
+		case npacket, ok := <-packetChan:
+			if !ok {
+				return nil, ok
+			}
+			packets = append(packets, npacket)
+		default:
+			return packets, true
+		}
+	}
+}
+
 func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 	var err error
 	lastError := time.Time{}
+	var writer *bufio.Writer
 	if conn == nil {
 		err = fmt.Errorf("uninitialized")
+		writer = nil
 	} else {
 		go c.receiveLoop(conn)
+		writer = bufio.NewWriterSize(conn, 16<<10)
 	}
-	for packet := range c.sendChan {
-		if err != nil {
-			if time.Since(lastError) > time.Second {
-				if conn != nil {
-					conn.Close()
+
+	for {
+		packets, ok := batcher(c.sendChan)
+		if !ok {
+			break
+		}
+		for _, packet := range packets {
+			if err != nil {
+				if time.Since(lastError) > time.Second {
+					if conn != nil {
+						conn.Close()
+					}
+					conn, err = c.dialer(c.addr)
+					if err == nil {
+						go c.receiveLoop(conn)
+						writer = bufio.NewWriterSize(conn, 16<<10)
+					} else {
+						lastError = time.Now()
+						conn = nil
+						writer = nil
+					}
 				}
-				conn, err = c.dialer(c.addr)
-				if err == nil {
-					go c.receiveLoop(conn)
-				} else {
-					lastError = time.Now()
-				}
+				c.pool.Put(packet)
+				continue
 			}
-			c.pool.Put(packet)
-			continue
+			if _, err = writeBuffer(writer, packet.Data[:packet.N], offset); err != nil {
+				lastError = time.Now()
+			} else {
+				c.pool.Put(packet)
+			}
 		}
-		if _, err = writeBuffer(conn, packet.Data[:packet.N], offset); err != nil {
-			lastError = time.Now()
+		if err == nil {
+			writer.Flush()
 		}
-		c.pool.Put(packet)
 	}
 	if conn != nil {
 		conn.Close()
