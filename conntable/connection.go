@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/golang/snappy"
+	"github.com/klauspost/compress/snappy"
 )
 
 type PeerConnection struct {
@@ -24,6 +24,7 @@ type PeerConnection struct {
 	pool *sync.Pool
 
 	lastActive             atomic.Value
+	lastError              atomic.Value
 	sendDropByteCounter    atomic.Int64
 	receiveDropByteCounter atomic.Int64
 	sendByteCounter        atomic.Int64
@@ -45,6 +46,7 @@ func NewConnection(addr string, dialer func(string) (net.Conn, *LocalPeerInfo, e
 		localPeerInfo: localPeerInfo,
 	}
 	c.lastActive.Store(time.Now())
+	c.lastError.Store(time.Time{})
 	c.sendByteCounter.Store(0)
 	c.receiveByteCounter.Store(0)
 	c.sendDropByteCounter.Store(0)
@@ -57,8 +59,8 @@ func (c *PeerConnection) Status() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	statusLine := fmt.Sprintf("Last active: %s\nSend queue size: %d\nTX bytes: %d, RX bytes: %d\nError TX bytes: %d, RX bytes: %d\n",
-		c.lastActive.Load().(time.Time), len(c.sendChan), c.sendByteCounter.Load(), c.receiveByteCounter.Load(), c.sendDropByteCounter.Load(), c.receiveDropByteCounter.Load())
+	statusLine := fmt.Sprintf("Last active: %s\nLast Error: %s\nSend queue size: %d\nTX bytes: %d, RX bytes: %d\nError TX bytes: %d, RX bytes: %d\n",
+		c.lastActive.Load().(time.Time), c.lastError.Load().(time.Time), len(c.sendChan), c.sendByteCounter.Load(), c.receiveByteCounter.Load(), c.sendDropByteCounter.Load(), c.receiveDropByteCounter.Load())
 	configLine := fmt.Sprintf("Compression: %v\n", c.localPeerInfo.EnableCompression || c.PeerInfo.EnableCompression)
 	return statusLine + configLine
 }
@@ -158,7 +160,6 @@ func batcher(packetChan chan *packet) ([]*packet, bool) {
 
 func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 	var err error
-	lastError := time.Time{}
 	var writer writeflusher
 	var peerInfo *LocalPeerInfo
 	if conn == nil {
@@ -176,7 +177,7 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 		}
 		for _, packet := range packets {
 			if err != nil {
-				if time.Since(lastError) > time.Second {
+				if time.Since(time.Time(c.lastError.Load().(time.Time))) > time.Second {
 					if conn != nil {
 						conn.Close()
 					}
@@ -188,7 +189,7 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 						c.mu.Unlock()
 						writer = c.getPeerWriter(conn)
 					} else {
-						lastError = time.Now()
+						c.lastError.Store(time.Now())
 						conn = nil
 						writer = nil
 					}
@@ -197,7 +198,7 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 				continue
 			}
 			if _, err = writeBuffer(writer, packet.Data[:packet.N], offset); err != nil {
-				lastError = time.Now()
+				c.lastError.Store(time.Now())
 			} else {
 				c.pool.Put(packet)
 			}

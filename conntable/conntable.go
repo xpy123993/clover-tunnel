@@ -312,17 +312,18 @@ func (t *PeerTable) Shutdown() {
 
 func (t *PeerTable) ServeFunc(w http.ResponseWriter, r *http.Request) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	peerTable := t.table
+	t.mu.Unlock()
 
-	keys := make([]string, 0, len(t.table))
-	for peerName := range t.table {
+	keys := make([]string, 0, len(peerTable))
+	for peerName := range peerTable {
 		keys = append(keys, peerName)
 	}
 	sort.Strings(keys)
 
 	fmt.Fprintf(w, "%s (Recv Queue: %d)\n", t.localInfo.LocalNet.String(), len(t.receiveChan))
 	for _, peerName := range keys {
-		peerConn := t.table[peerName]
+		peerConn := peerTable[peerName]
 		fmt.Fprintf(w, "\nPeer: %s\nHostname: %s\n", peerName, t.dnsTable.ReverseLookup(peerName))
 		sessionID, err := t.dialer.GetSessionID(path.Join(t.localInfo.ChannelRoot, peerName))
 		if err == nil {

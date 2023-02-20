@@ -26,6 +26,19 @@ func TestNoServeClose(t *testing.T) {
 	table.Shutdown()
 }
 
+func TestClosedConnStatus(t *testing.T) {
+	conn := conntable.NewConnection("test", func(s string) (net.Conn, *conntable.LocalPeerInfo, error) {
+		return nil, nil, fmt.Errorf("unimplemented")
+	}, nil, nil, 1, &conntable.LocalPeerInfo{})
+	if len(conn.Status()) == 0 {
+		t.Error("empty status text")
+	}
+	conn.Close()
+	if len(conn.Status()) == 0 {
+		t.Error("empty status text")
+	}
+}
+
 func TestServeFailedDueToReadLoopExited(t *testing.T) {
 	testDevice := TestDevice{}
 
