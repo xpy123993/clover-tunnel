@@ -13,8 +13,8 @@ require (
 require (
 	github.com/go-task/slim-sprig v0.0.0-20210107165309-348f09dbbbc0 // indirect
 	github.com/golang/mock v1.6.0 // indirect
+	github.com/golang/snappy v0.0.4
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
-	github.com/klauspost/compress v1.15.15
 	github.com/klauspost/cpuid/v2 v2.2.3 // indirect
 	github.com/klauspost/reedsolomon v1.11.7 // indirect
 	github.com/onsi/ginkgo/v2 v2.8.3 // indirect

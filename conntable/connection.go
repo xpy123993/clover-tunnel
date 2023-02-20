@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/klauspost/compress/snappy"
+	"github.com/golang/snappy"
 )
 
 type PeerConnection struct {
