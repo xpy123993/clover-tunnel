@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang/snappy"
@@ -17,36 +18,39 @@ type PeerConnection struct {
 	sendChan    chan *packet
 	receiveChan chan *packet
 
-	mu                     sync.RWMutex
-	PeerInfo               LocalPeerInfo
-	lastActive             time.Time
-	isClosed               bool
-	pool                   *sync.Pool
-	sendDropByteCounter    int64
-	receiveDropByteCounter int64
-	sendByteCounter        int64
-	receiveByteCounter     int64
+	mu       sync.RWMutex
+	PeerInfo LocalPeerInfo
+
+	pool *sync.Pool
+
+	lastActive             atomic.Value
+	sendDropByteCounter    atomic.Int64
+	receiveDropByteCounter atomic.Int64
+	sendByteCounter        atomic.Int64
+	receiveByteCounter     atomic.Int64
+	isClosed               atomic.Bool
 
 	maxQueueSize  int
 	localPeerInfo *LocalPeerInfo
 }
 
 func NewConnection(addr string, dialer func(string) (net.Conn, *LocalPeerInfo, error), receiveChan chan *packet, pool *sync.Pool, maxQueueSize int, localPeerInfo *LocalPeerInfo) *PeerConnection {
-	return &PeerConnection{
-		addr:                   addr,
-		dialer:                 dialer,
-		sendChan:               make(chan *packet, maxQueueSize),
-		receiveChan:            receiveChan,
-		lastActive:             time.Now(),
-		isClosed:               false,
-		pool:                   pool,
-		maxQueueSize:           maxQueueSize,
-		sendDropByteCounter:    0,
-		receiveDropByteCounter: 0,
-		sendByteCounter:        0,
-		receiveByteCounter:     0,
-		localPeerInfo:          localPeerInfo,
+	c := &PeerConnection{
+		addr:          addr,
+		dialer:        dialer,
+		sendChan:      make(chan *packet, maxQueueSize),
+		receiveChan:   receiveChan,
+		pool:          pool,
+		maxQueueSize:  maxQueueSize,
+		localPeerInfo: localPeerInfo,
 	}
+	c.lastActive.Store(time.Now())
+	c.sendByteCounter.Store(0)
+	c.receiveByteCounter.Store(0)
+	c.sendDropByteCounter.Store(0)
+	c.receiveDropByteCounter.Store(0)
+	c.isClosed.Store(false)
+	return c
 }
 
 func (c *PeerConnection) Status() string {
@@ -54,15 +58,13 @@ func (c *PeerConnection) Status() string {
 	defer c.mu.RUnlock()
 
 	statusLine := fmt.Sprintf("Last active: %s\nSend queue size: %d\nTX bytes: %d, RX bytes: %d\nError TX bytes: %d, RX bytes: %d\n",
-		c.lastActive, len(c.sendChan), c.sendByteCounter, c.receiveByteCounter, c.sendDropByteCounter, c.receiveDropByteCounter)
+		c.lastActive.Load().(time.Time), len(c.sendChan), c.sendByteCounter.Load(), c.receiveByteCounter.Load(), c.sendDropByteCounter.Load(), c.receiveDropByteCounter.Load())
 	configLine := fmt.Sprintf("Compression: %v\n", c.localPeerInfo.EnableCompression || c.PeerInfo.EnableCompression)
 	return statusLine + configLine
 }
 
 func (t *PeerConnection) LastActive() time.Time {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.lastActive
+	return t.lastActive.Load().(time.Time)
 }
 
 type writeflusher interface {
@@ -89,28 +91,22 @@ func (c *PeerConnection) getPeerReader(conn net.Conn) io.Reader {
 }
 
 func (c *PeerConnection) Close() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.isClosed {
-		return
+	if c.isClosed.CompareAndSwap(false, true) {
+		close(c.sendChan)
 	}
-	close(c.sendChan)
-	c.isClosed = true
 }
 
 func (c *PeerConnection) Send(p *packet) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.isClosed {
+	if c.isClosed.Load() {
 		return
 	}
 	pendingBytes := p.N
 	select {
 	case c.sendChan <- p:
-		c.sendByteCounter += int64(pendingBytes)
-		c.lastActive = time.Now()
+		c.sendByteCounter.Add(int64(pendingBytes))
+		c.lastActive.Store(time.Now())
 	default:
-		c.sendDropByteCounter += int64(pendingBytes)
+		c.sendDropByteCounter.Add(int64(pendingBytes))
 		c.pool.Put(p)
 	}
 }
@@ -126,20 +122,17 @@ func (c *PeerConnection) receiveLoop(conn net.Conn) {
 			return
 		}
 		packet.N = n + offset
-		c.mu.Lock()
-		if c.isClosed {
-			c.mu.Unlock()
+		if c.isClosed.Load() {
 			return
 		}
 		select {
 		case c.receiveChan <- packet:
-			c.receiveByteCounter += int64(n)
-			c.lastActive = time.Now()
+			c.receiveByteCounter.Add(int64(n))
+			c.lastActive.Store(time.Now())
 		default:
-			c.receiveDropByteCounter += int64(n)
+			c.receiveDropByteCounter.Add(int64(n))
 			c.pool.Put(packet)
 		}
-		c.mu.Unlock()
 	}
 }
 
