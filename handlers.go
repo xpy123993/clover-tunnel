@@ -131,10 +131,11 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 		}))
 	defer clientDialer.Close()
 	localInfo := conntable.LocalPeerInfo{
-		MTU:         mtu,
-		Hostname:    hostname,
-		LocalNet:    localNet,
-		ChannelRoot: toAddr.Path,
+		MTU:               mtu,
+		Hostname:          hostname,
+		LocalNet:          localNet,
+		ChannelRoot:       toAddr.Path,
+		EnableCompression: fromAddr.Query().Get("comp") == "1",
 	}
 	connTable := conntable.NewPeerTable(context.Background(), device, listener, clientDialer, 1000, &localInfo)
 	if len(*debugAddress) > 0 {

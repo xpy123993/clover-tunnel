@@ -27,14 +27,14 @@ type peerHello struct {
 	FromAddr string
 	ToAddr   string
 
-	Hostname string
+	LocalPeerInfo LocalPeerInfo
 }
 
 type peerResponse struct {
 	Success bool
 	Reason  string
 
-	Hostname string
+	LocalPeerInfo LocalPeerInfo
 }
 
 type packet struct {
@@ -49,6 +49,8 @@ type LocalPeerInfo struct {
 	LocalNet netip.Prefix
 
 	ChannelRoot string
+
+	EnableCompression bool
 }
 
 type PeerTable struct {
@@ -93,31 +95,31 @@ func NewPeerTable(ctx context.Context, device tun.Device, listener net.Listener,
 	return table
 }
 
-func (t *PeerTable) dialToPeer(s string) (net.Conn, error) {
+func (t *PeerTable) dialToPeer(s string) (net.Conn, *LocalPeerInfo, error) {
 	if t.innerContext.Err() != nil {
-		return nil, fmt.Errorf("PeerTable is closed")
+		return nil, nil, fmt.Errorf("PeerTable is closed")
 	}
 	conn, err := t.dialer.Dial(path.Join(t.localInfo.ChannelRoot, s))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := gob.NewEncoder(conn).Encode(peerHello{FromAddr: t.localInfo.LocalNet.Addr().String(), ToAddr: s, Hostname: t.localInfo.Hostname}); err != nil {
+	if err := gob.NewEncoder(conn).Encode(peerHello{FromAddr: t.localInfo.LocalNet.Addr().String(), ToAddr: s, LocalPeerInfo: *t.localInfo}); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	resp := peerResponse{}
 	if err := gob.NewDecoder(conn).Decode(&resp); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	if !resp.Success {
 		conn.Close()
-		return nil, fmt.Errorf("app error: %s", resp.Reason)
+		return nil, nil, fmt.Errorf("app error: %s", resp.Reason)
 	}
 	conn.SetDeadline(time.Time{})
-	t.dnsTable.Update(resp.Hostname, s)
-	return conn, nil
+	t.dnsTable.Update(resp.LocalPeerInfo.Hostname, s)
+	return conn, &resp.LocalPeerInfo, nil
 }
 
 func (t *PeerTable) serveReadDeviceLoop() {
@@ -145,7 +147,7 @@ func (t *PeerTable) serveReadDeviceLoop() {
 			t.mu.Lock()
 			peerConn, exists := t.table[dst]
 			if !exists {
-				peerConn = NewConnection(dst, t.dialToPeer, t.receiveChan, &t.pool, t.maxQueueSize)
+				peerConn = NewConnection(dst, t.dialToPeer, t.receiveChan, &t.pool, t.maxQueueSize, t.localInfo)
 				go peerConn.ChannelLoop(nil)
 				t.table[dst] = peerConn
 			}
@@ -188,15 +190,16 @@ func (t *PeerTable) servePeerIncomingConnnectionLoop() {
 				gob.NewEncoder(peerConn).Encode(peerResponse{Success: false, Reason: fmt.Sprintf("expect local addr: %s, got %s", t.localInfo.LocalNet.Addr().String(), peerHello.ToAddr)})
 				return
 			}
-			if err := gob.NewEncoder(peerConn).Encode(peerResponse{Success: true, Hostname: t.localInfo.Hostname}); err != nil {
+			if err := gob.NewEncoder(peerConn).Encode(peerResponse{Success: true, LocalPeerInfo: *t.localInfo}); err != nil {
 				return
 			}
-			t.dnsTable.Update(peerHello.Hostname, peerHello.FromAddr)
+			t.dnsTable.Update(peerHello.LocalPeerInfo.Hostname, peerHello.FromAddr)
 
 			t.mu.Lock()
 			peerCh, exists := t.table[peerHello.FromAddr]
 			if !exists {
-				peerCh = NewConnection(peerHello.FromAddr, t.dialToPeer, t.receiveChan, &t.pool, t.maxQueueSize)
+				peerCh = NewConnection(peerHello.FromAddr, t.dialToPeer, t.receiveChan, &t.pool, t.maxQueueSize, t.localInfo)
+				peerCh.PeerInfo = peerHello.LocalPeerInfo
 				t.table[peerHello.FromAddr] = peerCh
 				t.mu.Unlock()
 				peerCh.ChannelLoop(peerConn)

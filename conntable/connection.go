@@ -3,18 +3,22 @@ package conntable
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/golang/snappy"
 )
 
 type PeerConnection struct {
 	addr        string
-	dialer      func(string) (net.Conn, error)
+	dialer      func(string) (net.Conn, *LocalPeerInfo, error)
 	sendChan    chan *packet
 	receiveChan chan *packet
 
 	mu                     sync.RWMutex
+	PeerInfo               LocalPeerInfo
 	lastActive             time.Time
 	isClosed               bool
 	pool                   *sync.Pool
@@ -23,10 +27,11 @@ type PeerConnection struct {
 	sendByteCounter        int64
 	receiveByteCounter     int64
 
-	maxQueueSize int
+	maxQueueSize  int
+	localPeerInfo *LocalPeerInfo
 }
 
-func NewConnection(addr string, dialer func(string) (net.Conn, error), receiveChan chan *packet, pool *sync.Pool, maxQueueSize int) *PeerConnection {
+func NewConnection(addr string, dialer func(string) (net.Conn, *LocalPeerInfo, error), receiveChan chan *packet, pool *sync.Pool, maxQueueSize int, localPeerInfo *LocalPeerInfo) *PeerConnection {
 	return &PeerConnection{
 		addr:                   addr,
 		dialer:                 dialer,
@@ -40,6 +45,7 @@ func NewConnection(addr string, dialer func(string) (net.Conn, error), receiveCh
 		receiveDropByteCounter: 0,
 		sendByteCounter:        0,
 		receiveByteCounter:     0,
+		localPeerInfo:          localPeerInfo,
 	}
 }
 
@@ -47,14 +53,39 @@ func (c *PeerConnection) Status() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return fmt.Sprintf("Last active: %s\nSend queue size: %d\nTX bytes: %d, RX bytes: %d\nError TX bytes: %d, RX bytes: %d\n",
+	statusLine := fmt.Sprintf("Last active: %s\nSend queue size: %d\nTX bytes: %d, RX bytes: %d\nError TX bytes: %d, RX bytes: %d\n",
 		c.lastActive, len(c.sendChan), c.sendByteCounter, c.receiveByteCounter, c.sendDropByteCounter, c.receiveDropByteCounter)
+	configLine := fmt.Sprintf("Compression: %v\n", c.localPeerInfo.EnableCompression || c.PeerInfo.EnableCompression)
+	return statusLine + configLine
 }
 
 func (t *PeerConnection) LastActive() time.Time {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.lastActive
+}
+
+type writeflusher interface {
+	Write([]byte) (int, error)
+	Flush() error
+}
+
+func (c *PeerConnection) getPeerWriter(conn net.Conn) writeflusher {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.PeerInfo.EnableCompression || c.localPeerInfo.EnableCompression {
+		return snappy.NewBufferedWriter(conn)
+	}
+	return bufio.NewWriterSize(conn, 16<<10)
+}
+
+func (c *PeerConnection) getPeerReader(conn net.Conn) io.Reader {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.PeerInfo.EnableCompression || c.localPeerInfo.EnableCompression {
+		return snappy.NewReader(conn)
+	}
+	return bufio.NewReaderSize(conn, 16<<10)
 }
 
 func (c *PeerConnection) Close() {
@@ -86,7 +117,7 @@ func (c *PeerConnection) Send(p *packet) {
 
 func (c *PeerConnection) receiveLoop(conn net.Conn) {
 	defer conn.Close()
-	reader := bufio.NewReaderSize(conn, 16<<10)
+	reader := c.getPeerReader(conn)
 	for {
 		packet := c.pool.Get().(*packet)
 		packet.N = 0
@@ -135,13 +166,14 @@ func batcher(packetChan chan *packet) ([]*packet, bool) {
 func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 	var err error
 	lastError := time.Time{}
-	var writer *bufio.Writer
+	var writer writeflusher
+	var peerInfo *LocalPeerInfo
 	if conn == nil {
 		err = fmt.Errorf("uninitialized")
 		writer = nil
 	} else {
 		go c.receiveLoop(conn)
-		writer = bufio.NewWriterSize(conn, 16<<10)
+		writer = c.getPeerWriter(conn)
 	}
 
 	for {
@@ -155,10 +187,13 @@ func (c *PeerConnection) ChannelLoop(conn net.Conn) {
 					if conn != nil {
 						conn.Close()
 					}
-					conn, err = c.dialer(c.addr)
+					conn, peerInfo, err = c.dialer(c.addr)
 					if err == nil {
 						go c.receiveLoop(conn)
-						writer = bufio.NewWriterSize(conn, 16<<10)
+						c.mu.Lock()
+						c.PeerInfo = *peerInfo
+						c.mu.Unlock()
+						writer = c.getPeerWriter(conn)
 					} else {
 						lastError = time.Now()
 						conn = nil

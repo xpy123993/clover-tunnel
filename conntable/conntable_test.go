@@ -102,7 +102,7 @@ func httpResonseContainsString(t *testing.T, table *conntable.PeerTable, keyword
 	}
 }
 
-func TestServeSuccessOnePeerPacket(t *testing.T) {
+func communicationRoutine(t *testing.T, peerAInfo, peerBInfo conntable.LocalPeerInfo) {
 	peerALis, peerADirectAddr := createCorenetListener(t)
 	peerBLis, peerBDirectAddr := createCorenetListener(t)
 
@@ -145,12 +145,7 @@ func TestServeSuccessOnePeerPacket(t *testing.T) {
 			return 31, nil
 		},
 		close: func() error { close(peerACloser); return nil },
-	}, peerALis, &conntable.LocalPeerInfo{
-		MTU:         1500,
-		Hostname:    "PeerA",
-		LocalNet:    netip.MustParsePrefix("192.168.100.1/24"),
-		ChannelRoot: "/test",
-	}, "PeerB", "192.168.100.2")
+	}, peerALis, &peerAInfo, "PeerB", "192.168.100.2")
 	received := atomic.Bool{}
 	received.Store(false)
 	peerBCloser := make(chan struct{})
@@ -170,17 +165,41 @@ func TestServeSuccessOnePeerPacket(t *testing.T) {
 			return len(b) - i, nil
 		},
 		close: func() error { close(peerBCloser); return nil },
-	}, peerBLis, &conntable.LocalPeerInfo{
-		MTU:         1500,
-		Hostname:    "PeerB",
-		LocalNet:    netip.MustParsePrefix("192.168.100.2/24"),
-		ChannelRoot: "/test",
-	}, "PeerA", "192.168.100.1")
+	}, peerBLis, &peerBInfo, "PeerA", "192.168.100.1")
 	<-sigReceivedPacket
 	if !received.Load() {
 		t.Errorf("PeerB cannot receive hello world packet")
 	}
 	completedPeers.Wait()
+}
+
+func TestServeSuccessOnePeerPacket(t *testing.T) {
+	communicationRoutine(t, conntable.LocalPeerInfo{
+		MTU:         1500,
+		Hostname:    "PeerA",
+		LocalNet:    netip.MustParsePrefix("192.168.100.1/24"),
+		ChannelRoot: "/test",
+	}, conntable.LocalPeerInfo{
+		MTU:         1500,
+		Hostname:    "PeerB",
+		LocalNet:    netip.MustParsePrefix("192.168.100.2/24"),
+		ChannelRoot: "/test",
+	})
+}
+
+func TestServeSuccessOnePeerPacketWithCompressionEnabled(t *testing.T) {
+	communicationRoutine(t, conntable.LocalPeerInfo{
+		MTU:               1500,
+		Hostname:          "PeerA",
+		LocalNet:          netip.MustParsePrefix("192.168.100.1/24"),
+		ChannelRoot:       "/test",
+		EnableCompression: true,
+	}, conntable.LocalPeerInfo{
+		MTU:         1500,
+		Hostname:    "PeerB",
+		LocalNet:    netip.MustParsePrefix("192.168.100.2/24"),
+		ChannelRoot: "/test",
+	})
 }
 
 func TestStatusPage200(t *testing.T) {
