@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"net"
 	"net/url"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pion/udp/v2"
+	"github.com/pkg/errors"
 	"github.com/xpy123993/corenet"
 )
 
@@ -44,6 +46,11 @@ func createCorenetListener(listenerURL *url.URL) (net.Listener, error) {
 		if err != nil {
 			return nil, err
 		}
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return nil, errors.Wrap(err, "cannot generate key")
+		}
+
 		switch portSplit[1] {
 		case "udp":
 			localAdapter, err := corenet.CreateListenerUDPPortAdapter(int(iPort))
@@ -52,7 +59,7 @@ func createCorenetListener(listenerURL *url.URL) (net.Listener, error) {
 			}
 			adapters = append(adapters, localAdapter)
 		case "tcp":
-			localAdapter, err := corenet.CreateListenerTCPPortAdapter(int(iPort))
+			localAdapter, err := corenet.CreateListenerAESTCPPortAdapter(int(iPort), key)
 			if err != nil {
 				return nil, err
 			}
@@ -63,7 +70,7 @@ func createCorenetListener(listenerURL *url.URL) (net.Listener, error) {
 				return nil, err
 			}
 			adapters = append(adapters, localAdapter)
-			localAdapter, err = corenet.CreateListenerTCPPortAdapter(int(iPort))
+			localAdapter, err = corenet.CreateListenerAESTCPPortAdapter(int(iPort), key)
 			if err != nil {
 				return nil, err
 			}
