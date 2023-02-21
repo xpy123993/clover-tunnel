@@ -59,7 +59,7 @@ func (c *PeerConnection) Status() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	statusLine := fmt.Sprintf("Last active: %s\nLast Error: %s\nSend queue size: %d\nTX bytes: %d, RX bytes: %d\nError TX bytes: %d, RX bytes: %d\n",
+	statusLine := fmt.Sprintf("Last active: %s\nLast error: %s\nSend queue size: %d\nTX bytes: %d, RX bytes: %d\nError TX bytes: %d, RX bytes: %d\n",
 		c.lastActive.Load().(time.Time), c.lastError.Load().(time.Time), len(c.sendChan), c.sendByteCounter.Load(), c.receiveByteCounter.Load(), c.sendDropByteCounter.Load(), c.receiveDropByteCounter.Load())
 	configLine := fmt.Sprintf("Compression: %v\n", c.localPeerInfo.EnableCompression || c.PeerInfo.EnableCompression)
 	return statusLine + configLine
