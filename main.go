@@ -18,25 +18,20 @@ var (
 	daemonRetryInterval = flag.Duration("duration", 3*time.Second, "In daemon mode, specifies the retry interval.")
 )
 
-func serve() {
+func Serve(FromURLString, ToURLString string) {
 	tlsConfig, err := getTLSConfigFromEmbeded()
 	if err != nil {
 		log.Fatalf("Corrupted: cannot load embedded certificate: %v", err)
 	}
 	tunnelTLSConfig = tlsConfig
 
-	args := flag.Args()
-	if len(args) != 2 {
-		log.Fatalf("Invalid args, usage: yukicat [from addr] [to addr]")
-	}
-
-	switch args[0] {
+	switch FromURLString {
 	case "relay":
-		serveAsRelayServer(args[1])
+		serveAsRelayServer(ToURLString)
 		return
 	case "ls":
 		log.SetFlags(0)
-		dialer := corenet.NewDialer([]string{args[1]}, corenet.WithDialerRelayTLSConfig(tunnelTLSConfig))
+		dialer := corenet.NewDialer([]string{ToURLString}, corenet.WithDialerRelayTLSConfig(tunnelTLSConfig))
 		channelInfos, err := dialer.GetChannelInfosFromRelay()
 		if err != nil {
 			log.Printf("Failed to fetch channel infos: %v", err)
@@ -51,11 +46,11 @@ func serve() {
 		log.Printf("%d channel(s) in total\n", len(channelInfos))
 		return
 	}
-	fromURL, err := url.Parse(args[0])
+	fromURL, err := url.Parse(FromURLString)
 	if err != nil {
 		log.Fatalf("Invalid from addr: %v", err)
 	}
-	toURL, err := url.Parse(args[1])
+	toURL, err := url.Parse(ToURLString)
 	if err != nil {
 		log.Fatalf("Invalid to addr: %v", err)
 	}
@@ -72,10 +67,10 @@ func main() {
 		go http.ListenAndServe(*debugAddress, nil)
 	}
 
-	serve()
+	Serve(flag.Arg(0), flag.Arg(1))
 	for *daemonMode {
 		log.Printf("Will retry in %s", *daemonRetryInterval)
 		time.Sleep(*daemonRetryInterval)
-		serve()
+		Serve(flag.Arg(0), flag.Arg(1))
 	}
 }
