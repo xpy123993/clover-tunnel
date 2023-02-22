@@ -19,6 +19,8 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+var debugHandler = map[string]func(w http.ResponseWriter, r *http.Request){}
+
 func serveAsRelayServer(relayURL string) {
 	server := corenet.NewRelayServer(corenet.WithRelayServerForceEvictChannelSession(true))
 	log.Printf("Server starts serving at %s", relayURL)
@@ -129,6 +131,7 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 			netip.MustParsePrefix("127.0.0.1/8"),
 			localNet,
 		}))
+
 	defer clientDialer.Close()
 	localInfo := conntable.LocalPeerInfo{
 		MTU:               mtu,
@@ -141,7 +144,8 @@ func serverAsTun(fromAddr, toAddr *url.URL) {
 	if len(*debugAddress) > 0 {
 		_, port, err := net.SplitHostPort(*debugAddress)
 		if err == nil {
-			http.HandleFunc("/yukicat/"+devName, connTable.ServeFunc)
+			debugHandler["/yukicat/"+devName] = connTable.ServeFunc
+			publishDialer(clientDialer)
 			log.Printf("Tunnel state is exposed to http://127.0.0.1:%s/yukicat/%s", port, devName)
 		}
 	}

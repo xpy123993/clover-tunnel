@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -64,6 +65,18 @@ func Serve(FromURLString, ToURLString string) {
 func main() {
 	flag.Parse()
 	if len(*debugAddress) > 0 {
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if handler, exists := debugHandler[r.URL.Path]; exists {
+				handler(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, "<h1> Available path </h1> \n")
+			fmt.Fprint(w, "<div><a href='/debug/corenet'>/debug/corenet</a></div>\n")
+			for addr := range debugHandler {
+				fmt.Fprintf(w, "<div><a href='%s'>%s</a></div>\n", addr, addr)
+			}
+		})
 		go http.ListenAndServe(*debugAddress, nil)
 	}
 
