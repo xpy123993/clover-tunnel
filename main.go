@@ -70,11 +70,13 @@ func main() {
 				handler(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprintf(w, "<h1> Available path </h1> \n")
-			fmt.Fprint(w, "<div><a href='/debug/corenet'>/debug/corenet</a></div>\n")
-			for addr := range debugHandler {
-				fmt.Fprintf(w, "<div><a href='%s'>%s</a></div>\n", addr, addr)
+			if r.URL.Path == "/" {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				fmt.Fprintf(w, "<h1> Available path </h1> \n")
+				fmt.Fprint(w, "<div><a href='/debug/corenet'>/debug/corenet</a></div>\n")
+				for addr := range debugHandler {
+					fmt.Fprintf(w, "<div><a href='%s'>%s</a></div>\n", addr, addr)
+				}
 			}
 		})
 		go http.ListenAndServe(*debugAddress, nil)
